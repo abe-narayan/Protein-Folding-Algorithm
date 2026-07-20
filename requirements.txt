@@ -1,1 +1,5 @@
-
+# Requirements for the Protein Folding Algorithm project
+# Goal:
+# - Simulate protein folding using a hybrid quantum-classical algorithm.
+# - Implement a CVaR-VQE optimizer for energy minimization.
+# - Compare quantum performance with classical optimization methods.
