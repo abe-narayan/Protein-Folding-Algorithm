@@ -3,7 +3,7 @@
 
 <body>
 
-<h1>How do quantum and classical optimization methods compare in scalability as protein length increases in lattice-based protein folding?</h1>
+<h1>How do quantum and classical optimization methods compare in scalability as protein length increases in lattice based protein folding?</h1>
 
 <p>
 Protein folding is a complex optimization problem where the goal is to find the
