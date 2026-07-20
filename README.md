@@ -1,27 +1,28 @@
-\documentclass{article}
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Protein Folding Algorithm</title>
+</head>
+<body>
 
-\title{Protein Folding Algorithm}
-\date{}
+<h1>Protein Folding Algorithm</h1>
 
-\begin{document}
+<p>
+This project implements a hybrid quantum-classical algorithm for protein
+folding using a Variational Quantum Eigensolver (VQE) with CVaR optimization.
+The goal is to find the lowest-energy protein fold and compare the results
+against classical optimization methods.
+</p>
 
-\maketitle
+<h2>Objectives</h2>
 
-\section*{Project Overview}
+<ul>
+    <li>Encode protein folds on a lattice</li>
+    <li>Construct the cost Hamiltonian</li>
+    <li>Implement a VQE algorithm</li>
+    <li>Optimize using CVaR</li>
+    <li>Benchmark against classical methods</li>
+</ul>
 
-This project implements a hybrid quantum-classical algorithm for protein folding
-using a Variational Quantum Eigensolver (VQE) with CVaR optimization. The goal
-is to predict the lowest-energy fold of a short protein on a tetrahedral lattice
-and compare the results against classical optimization methods.
-
-\section*{Objectives}
-
-\begin{itemize}
-    \item Encode protein folds on a lattice
-    \item Construct the cost Hamiltonian
-    \item Implement a VQE algorithm
-    \item Optimize using CVaR
-    \item Benchmark against classical methods
-\end{itemize}
-
-\end{document}
+</body>
+</html>
