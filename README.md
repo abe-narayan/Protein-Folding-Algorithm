@@ -1,8 +1,6 @@
 <!DOCTYPE html>
 <html>
-<head>
-    <title>Protein Folding Algorithm</title>
-</head>
+
 <body>
 
 <h1>Protein Folding Algorithm</h1>
