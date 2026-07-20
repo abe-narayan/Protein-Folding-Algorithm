@@ -6,9 +6,9 @@
 <h1>Protein Folding Algorithm</h1>
 
 <p>
-This project implements a hybrid quantum-classical algorithm for protein
+This project implements a hybrid quantum classical algorithm for protein
 folding using a Variational Quantum Eigensolver (VQE) with CVaR optimization.
-The goal is to find the lowest-energy protein fold and compare the results
+The goal is to find the lowest energy protein fold and compare the results
 against classical optimization methods.
 </p>
 
