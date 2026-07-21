@@ -16,7 +16,7 @@ OPPOSITE = {
 
 
 def bits_to_directions(bitstring):
-    return [(int(bitstring[2*i]), int(bitstring[2*i+1])) for i in range(n_turns)]
+    return [(int(bitstring[2*i]), int(bitstring[2*i+1])) for i in range(len(bitstring) // 2)]
  
 def bits_to_coords(bitstring):
     coords = [(0, 0)]
