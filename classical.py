@@ -29,4 +29,5 @@ def turn_calculation(aminos, turns):
         if turns[i+1] == OPPOSITE[turns[i]]:
             classical_energy += lambda_back
     for j in range(0, len(turns)-2):
-        if
+        if turns[i+2] == OPPOSITE[turns[i]] and turns[i+1]!=turns[i] and turns[i+2]!=OPPOSITE[turns[i]]:
+            classical_energy+=energy_interactions.get((aminos[i], aminos[i+3]),0.0)
