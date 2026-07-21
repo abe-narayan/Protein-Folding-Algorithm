@@ -7,10 +7,12 @@ seq = ['-', 'P','H','+'] #adjustable
 n_turns = len(seq)-1
 n_qubits = 2*n_turns
 
-energy_table = numpy.array([
-    path_energy(format(idx, f'0{n_qubits}b'), seq)
-    for idx in range(2 ** n_qubits)
-])
+energy_list = []
+for idx in range(2 ** n_qubits):
+    bitstring = format(idx, f'0{n_qubits}b')
+    energy = path_energy(bitstring, seq)
+    energy_list.append(energy)
+energy_table = numpy.array(energy_list)
 
 idx = energy_table.argmin()
 lowest_energy = energy_table[idx]
