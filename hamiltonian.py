@@ -31,12 +31,6 @@ def get_interaction(a, b):
     return INTERACTIONS.get((a, b), FALLBACK_INTERACTION)
 
 
-sequence = ['H', 'P', 'H', 'P', 'H']
- 
-n_residues = len(sequence)
-n_turns = n_residues - 1
-n_qubits = 2 * n_turns
-
 
 def path_energy(bitstring, overlap_penalty=10.0, reversal_penalty=5.0):
     coords = bits_to_coords(bitstring)
