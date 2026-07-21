@@ -5,12 +5,6 @@ DIRECTIONS = {
     (1, 1): (-1, -1, 1),
 }
 
-OPPOSITE = {
-    (0, 0): (0, 0),
-    (0, 1): (0, 1),
-    (1, 0): (1, 0),
-    (1, 1): (1, 1),
-}
 
 
 def bits_to_directions(bitstring):
