@@ -1,4 +1,9 @@
 import numpy as np
+from encoding import (
+    bits_to_coords,
+    bits_to_directions,
+    OPPOSITE
+)
 
 DIRECTIONS = {
 
