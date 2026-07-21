@@ -13,7 +13,9 @@ INTERACTIONS = {
 FALLBACK_INTERACTION = 0.0 # if not listed above
 
 def get_interaction(a, b):
-    return INTERACTIONS.get((a, b), FALLBACK_INTERACTION)
+    if (a, b) in INTERACTIONS:
+        return INTERACTIONS[(a, b)]
+    return FALLBACK_INTERACTION
 
 
 
