@@ -1,4 +1,3 @@
-from encoding import bits_to_coords, bits_to_directions, DIRECTIONS
 import matplotlib.pyplot as plt
 from local_hamiltonian import build_local_hamiltonian
 
