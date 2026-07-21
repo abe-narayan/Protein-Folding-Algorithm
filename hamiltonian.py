@@ -1,7 +1,7 @@
-import numpy as np
 from encoding import (
     bits_to_coords,
     bits_to_directions,
+    DIRECTIONS,
     OPPOSITE
 )
 
@@ -22,10 +22,11 @@ def get_interaction(a, b):
 
 
 
-def path_energy(bitstring, overlap_penalty=10.0, reversal_penalty=5.0):
+def path_energy( bitstring, sequence, overlap_penalty=10.0, reversal_penalty=5.0):
     coords = bits_to_coords(bitstring)
     dirs = bits_to_directions(bitstring)
     energy = 0.0
+    n_residues = len(sequence)
 
     for i in range(n_residues):
         for j in range(i + 1, n_residues):
@@ -45,6 +46,3 @@ def path_energy(bitstring, overlap_penalty=10.0, reversal_penalty=5.0):
     
     return energy
 
-energy_table = np.array([
-    path_energy(format(idx, f'0{n_qubits}b')) for idx in range(2 ** n_qubits)
-])

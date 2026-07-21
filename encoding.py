@@ -1,3 +1,20 @@
+DIRECTIONS = {
+
+(0,0):(1,0),
+(0,1):(0,1),
+(1,0):(-1,0),
+(1,1):(0,-1),
+}
+
+OPPOSITE = {
+
+(0,0):(1,0),
+(1,0):(0,0),
+(0,1):(1,1),
+(1,1):(0,1),
+}
+
+
 def bits_to_directions(bitstring):
     return [(int(bitstring[2*i]), int(bitstring[2*i+1])) for i in range(n_turns)]
  
