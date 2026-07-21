@@ -1,8 +1,7 @@
 from encoding import (
     bits_to_coords,
     bits_to_directions,
-    DIRECTIONS,
-    OPPOSITE
+    DIRECTIONS
 )
 
 
@@ -35,14 +34,12 @@ def path_energy( bitstring, sequence, overlap_penalty=10.0, reversal_penalty=5.0
 
     for i in range(n_residues):
         for j in range(i + 2, n_residues):
-            dist = abs(coords[i][0] - coords[j][0]) + abs(coords[i][1] - coords[j][1])
+            dist = (abs(coords[i][0] - coords[j][0])
+                    + abs(coords[i][1] - coords[j][1])
+                    + abs(coords[i][2] - coords[j][2]))
             if dist == 1:
                 energy += get_interaction(sequence[i], sequence[j])
 
-    for i in range(len(dirs) - 1):
-        if OPPOSITE[dirs[i]] == dirs[i + 1]:
-            energy += reversal_penalty
 
-    
     return energy
 
