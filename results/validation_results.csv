@@ -1,0 +1,3 @@
+Sequence,Residues,Qubits,Seed,Alpha,Repetitions,Optimization Steps,Objective Evaluations,Brute Force Energy,Brute Force Bitstring,Brute Force Time (s),VQE Energy,VQE Bitstring,Final CVaR,Best CVaR,VQE Time (s),Energy Gap,Matched
+HPPPH,5,8,42,0.1,1000,100,100,-2.29,00011000,0.002179,-2.29,00011000,-2.289999999999999,-2.29,4.805196,0.0,True
+HPPPH,5,8,42,0.1,1000,100,100,-2.29,00011000,0.002070,-2.29,00011000,-2.289999999999999,-2.29,5.908881,0.0,True
