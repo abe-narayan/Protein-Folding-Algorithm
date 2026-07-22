@@ -40,10 +40,9 @@ def calculate_cvar(
     dev = qml.device(
         "default.qubit",
         wires=n_qubits,
-        shots=repetitions
     )
 
-
+    @qml.set_shots(shots=repetitions)
     @qml.qnode(dev)
     def circuit():
 

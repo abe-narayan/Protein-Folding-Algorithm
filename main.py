@@ -1,40 +1,16 @@
 from vqe import run_vqe
 
 
-sequence = "HP+-HHP+-HHP+-H"
+sequence = "HP+-H"
 
 
 result, history = run_vqe(
     sequence=sequence,
-    alpha=0.1,
+    alpha=0.5,
     repetitions=1000,
-    optimization_steps=100
+    optimization_steps=50
 )
 
 
-print()
-print("Finished!")
-print()
-
-print("Sequence:")
-print(sequence)
-
-print()
-
-print("Number of amino acids:")
-print(len(sequence))
-
-print()
-
-print("Number of qubits:")
-print(2 * (len(sequence) - 1))
-
-print()
-
-print("Best CVaR:")
-print(result.fun)
-
-print()
-
-print("Best parameters:")
-print(result.x)
+print("Finished")
+print("Best CVaR:", result.fun)
