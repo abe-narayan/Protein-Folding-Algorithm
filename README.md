@@ -74,10 +74,30 @@ by the energy value.
 **Disulfide bonds.** Cys-Cys disulfides are covalent links that often dominate a small
 peptide's structure. `find_disulfide_pairs` infers them from the sequence (a peptide
 with exactly two cysteines is assumed to form one disulfide) and `path_energy` applies
-a distance restraint that pulls the bonded cysteines together, reproducing the native
-cyclic topology. For oxytocin (`CYIQNCPLG`, ref `7OFG`, whose header notes a
-`CYS-CYS DISULFIDE BOND`) this drives the Cys1-Cys6 pair into contact and lowers RMSD
-to the reference (~0.62 → ~0.51) — a realistic constraint, not a tuned fit.
+them by default as a **hard topological constraint** (bonded cysteines must sit within
+the lattice bond shell), restricting the search to the native cyclic class. For
+oxytocin (`CYIQNCPLG`, ref `7OFG`, header `CYS-CYS DISULFIDE BOND`) the bond is Cys1-Cys6.
+
+## What is (and isn't) validated
+
+Reporting a single RMSD-to-reference is not a result here, because the energy ground
+state is highly degenerate (96 symmetry-equivalent folds for oxytocin, RMSD 0.53-0.65),
+so a bare RMSD reflects which degenerate fold was sampled, not model skill. `analysis.py`
+and `validate_structure.py` replace it with measured statistics (nothing tuned to the
+reference). For oxytocin vs `7OFG` (exact enumeration, 42,184 folds):
+
+- **Predictive validity — negative.** Spearman(energy, RMSD) = **−0.26** (p ≈ 0): lower
+  MJ energy predicts a *less* native fold. The MJ contact potential rewards hydrophobic
+  collapse and is out of its domain for a small solvent-exposed cyclic peptide, so
+  energy minimization is not a valid structure predictor here. A single energy-minimum
+  fold must **not** be reported as a prediction.
+- **Disulfide constraint — significant, positive.** Restricting to disulfide-satisfying
+  folds shifts the accessible ensemble toward native: median Cα-RMSD **0.498 → 0.443**
+  (Mann-Whitney U, one-sided, **p ≈ 6×10⁻¹⁹⁶**). This is a pure-geometry result,
+  independent of the energy objective.
+
+Run `python validate_structure.py` to regenerate these numbers and
+`results/structure_validity_CYIQNCPLG.png`.
 
 ## Status
 

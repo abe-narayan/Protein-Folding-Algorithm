@@ -146,8 +146,16 @@ if __name__ == "__main__":
     fold_rmsd = rmsd(best_coords_aligned, real_coords)
 
     print("Optimal Bitstring:", best_bitstring)
-    print("Lowest Energy:", min_energy)
+    print("Lowest Energy (relative MJ units):", min_energy)
     print(f"RMSD vs real structure ({pdb_id}): {fold_rmsd:.4f}")
+    print(
+        "  NOTE: this is one fold from a highly degenerate energy minimum and is "
+        "NOT a validated structure prediction.\n"
+        "  The MJ contact energy is anti-correlated with native similarity for "
+        "this peptide -- run\n"
+        "  `python validate_structure.py` for the backed statistics "
+        "(predictive validity + disulfide effect)."
+    )
     print("3D Coordinates:")
 
     for i, (res, coord) in enumerate(
@@ -158,7 +166,8 @@ if __name__ == "__main__":
     plot_protein(
         best_coords_aligned,
         sequence,
-        title=f"VQE Fold for '{sequence}' (RMSD to {pdb_id}: {fold_rmsd:.3f})",
+        title=(f"VQE Fold for '{sequence}' "
+               f"(one degenerate-minimum fold; RMSD to {pdb_id}: {fold_rmsd:.3f})"),
         min_energy=min_energy
     )
 

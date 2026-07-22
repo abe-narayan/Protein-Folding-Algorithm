@@ -99,6 +99,11 @@ def find_disulfide_pairs(sequence):
     return []
 
 
+# On this lattice the nearest non-bonded shell is squared-distance 8; a disulfide
+# is a covalent bond, so bonded cysteines must sit within that shell or closer.
+DISULFIDE_BOND_D2 = 8
+
+
 def path_energy_specific(
     bitstring,
     sequence,
@@ -107,6 +112,7 @@ def path_energy_specific(
     compactness_weight=0.5,
     disulfide_pairs=None,
     disulfide_weight=0.5,
+    disulfide_hard=False,
 ):
     coords = bits_to_coords(bitstring)
     n_residues = len(sequence)
@@ -134,18 +140,26 @@ def path_energy_specific(
                     sequence[j]
                 )
 
-    # Disulfide bonds are covalent Cys-Cys links (~2 A S-S) that pull the two
-    # residues together and cyclize the peptide. On this coarse lattice we model
-    # each bond as a harmonic-style distance restraint: a penalty proportional to
-    # the squared Cys-Cys separation, which drives the two cysteines into contact
-    # (the native cyclic topology) instead of letting them drift apart. Once in
-    # contact they also receive the normal favorable Cys-Cys MJ contact energy.
+    # Disulfide bonds are covalent Cys-Cys links that cyclize the peptide. A
+    # covalent bond is not optional, so the principled model is a *hard*
+    # topological constraint: folds that leave a bonded pair outside the bond
+    # shell are forbidden (given an overlap-scale penalty), which restricts the
+    # search to the native cyclic class. Empirically this enriches native-like
+    # conformations at the ensemble level (see analysis.disulfide_effect). The
+    # softer distance restraint (disulfide_weight) is retained for comparison but
+    # is off by default, since a distance-graded pull is not physically stronger
+    # than the bond simply existing.
     if disulfide_pairs:
         for i, j in disulfide_pairs:
             dx = coords[i][0] - coords[j][0]
             dy = coords[i][1] - coords[j][1]
             dz = coords[i][2] - coords[j][2]
-            energy += disulfide_weight * (dx * dx + dy * dy + dz * dz)
+            d2 = dx * dx + dy * dy + dz * dz
+            if disulfide_hard:
+                if d2 > DISULFIDE_BOND_D2:
+                    energy += overlap_penalty
+            else:
+                energy += disulfide_weight * d2
 
     if compactness_weight:
         cx = sum(c[0] for c in coords) / n_residues
@@ -164,17 +178,20 @@ def path_energy_specific(
     return energy
 
 
-def path_energy(bitstring, sequence, overlap_penalty=30.0, use_disulfide=True,
-                disulfide_weight=0.5):
-    # Disulfide restraints are inferred from the sequence (see
-    # find_disulfide_pairs) and applied by default so the whole pipeline --
-    # brute force, VQE, validation -- folds the same realistic model. Set
-    # use_disulfide=False to reproduce the unconstrained "before" baseline.
+def path_energy(bitstring, sequence, overlap_penalty=30.0, use_disulfide=True):
+    # Disulfide bonds are inferred from the sequence (see find_disulfide_pairs)
+    # and applied by default as a hard topological constraint, so the whole
+    # pipeline -- brute force, VQE, validation -- searches the same physically
+    # constrained fold space. Set use_disulfide=False for the unconstrained
+    # baseline. NOTE: for solvent-exposed peptides the MJ contact energy is
+    # anti-correlated with native similarity (see analysis.predictive_validity);
+    # the disulfide constraint helps at the ensemble level, but a single
+    # energy-minimum fold should not be reported as a structure prediction.
     disulfide_pairs = find_disulfide_pairs(sequence) if use_disulfide else None
     return path_energy_specific(
         bitstring,
         sequence,
         overlap_penalty=overlap_penalty,
         disulfide_pairs=disulfide_pairs,
-        disulfide_weight=disulfide_weight,
+        disulfide_hard=True,
     )

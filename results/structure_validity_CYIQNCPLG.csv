@@ -1,0 +1,15 @@
+metric,value
+n_folds,42184
+rmsd_best_possible,0.2128
+rmsd_null_median,0.4946
+spearman_energy_rmsd,-0.2581
+spearman_p,0.00e+00
+gs_degeneracy,96
+gs_rmsd_median,0.5956
+disulfide_n_constrained,2952
+disulfide_n_unconstrained,39232
+disulfide_median_constrained,0.44318232875253316
+disulfide_median_unconstrained,0.49768138910946064
+disulfide_best_constrained,0.2695578131716705
+disulfide_mannwhitney_u,38868288.0
+disulfide_p_value,6.437631764148045e-196
