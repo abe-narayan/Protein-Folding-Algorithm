@@ -5,4 +5,3 @@ pennylane
 networkx
 biopython
 jupyter
-Bio
