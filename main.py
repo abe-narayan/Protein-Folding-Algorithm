@@ -110,8 +110,7 @@ def plot_real_structure(real_coords, sequence, pdb_id="2KS9"):
 
 if __name__ == "__main__":
 
-    sequence = "RPKPQQFFGLM"
-
+    sequence = "CYIQNCPLG"
     result, history = run_vqe(
         sequence=sequence,
         alpha=0.5,
@@ -125,10 +124,8 @@ if __name__ == "__main__":
         repetitions=1000
     )
 
-    real_coords = get_ca_coords(
-        "2KS9.pdb",
-        chain_id="B"
-    )
+
+    real_coords = get_ca_coords("7OFG.pdb", chain_id="A")
 
     real_coords = normalize_coords(real_coords)
     best_coords_norm = normalize_coords(best_coords)

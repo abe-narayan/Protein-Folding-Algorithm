@@ -12,7 +12,7 @@ def get_ca_coords(pdb_path, chain_id=None):
             if chain_id and chain.id != chain_id:
                 continue
             for residue in chain:
-                if "CA" in residue:
+                if "CA" in residue and residue.id[0] == " ":  # standard residues only
                     coords.append(tuple(residue["CA"].coord))
         break
 
@@ -43,8 +43,13 @@ def kabsch_align(coords_to_rotate, reference_coords):
 
 from Bio.PDB import PDBParser
 parser = PDBParser(QUIET=True)
-structure = parser.get_structure("protein", "2KS9.pdb")
+structure = parser.get_structure("protein", "7OFG.pdb")
 for model in structure:
     for chain in model:
         print(chain.id, len(chain))
     break
+
+from real_structure import get_ca_coords
+
+coords = get_ca_coords("7OFG.pdb", chain_id="A")
+print(len(coords))
