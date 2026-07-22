@@ -16,6 +16,7 @@ import numpy as np
 from encoding import bits_to_coords
 from hamiltonian import path_energy
 from vqe import run_vqe, best_fold_from_params
+from main import plot_protein
 
 # Small enough that brute force is exact and the circuit is cheap to simulate:
 # 5 residues -> 2 * (5 - 1) = 8 qubits (256 folds).
@@ -106,7 +107,7 @@ def main():
         optimization_steps=OPTIMIZATION_STEPS,
         seed=SEED,
     )
-    vqe_energy, vqe_bitstring = best_fold_from_params(
+    vqe_bitstring, vqe_coords, vqe_energy = best_fold_from_params(      
         result.x,
         SEQUENCE,
         repetitions=REPETITIONS,
@@ -150,7 +151,7 @@ def main():
         },
     )
     print(f"Results saved to: {CSV_OUTPUT}")
-
+    plot_protein(vqe_coords, SEQUENCE, vqe_energy)
 
 if __name__ == "__main__":
     main()
