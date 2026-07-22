@@ -70,6 +70,9 @@ def _build_full_matrix():
 
 MJ_MATRIX = _build_full_matrix()
 
+_MAX_PAIR_ENERGY = max(abs(v) for v in MJ_MATRIX.values())
+
+
 def get_interaction(aa1: str, aa2: str) -> float:
     a1 = ONE_LETTER_TO_FULL.get(aa1.strip().upper(), aa1.strip().upper())
     a2 = ONE_LETTER_TO_FULL.get(aa2.strip().upper(), aa2.strip().upper())
@@ -79,36 +82,44 @@ def get_interaction(aa1: str, aa2: str) -> float:
 def path_energy(
     bitstring,
     sequence,
-    overlap_penalty=100.0
+    overlap_penalty=None,
+    contact_weight=1.0,
+    compactness_weight=0.5,
 ):
-
     coords = bits_to_coords(bitstring)
+    n_residues = len(sequence)
+
+    if overlap_penalty is None:
+        n_pairs = n_residues * (n_residues - 1) // 2
+        overlap_penalty = contact_weight * _MAX_PAIR_ENERGY * n_pairs + 1.0
 
     energy = 0.0
 
-    n_residues = len(sequence)
-
     for i in range(n_residues):
-
         for j in range(i + 1, n_residues):
-
             if coords[i] == coords[j]:
-
                 energy += overlap_penalty
 
     for i in range(n_residues):
-
         for j in range(i + 2, n_residues):
-
             dx = coords[i][0] - coords[j][0]
             dy = coords[i][1] - coords[j][1]
             dz = coords[i][2] - coords[j][2]
 
             if dx * dx + dy * dy + dz * dz == 8:
-
-                energy += get_interaction(
+                energy += contact_weight * get_interaction(
                     sequence[i],
                     sequence[j]
                 )
+
+    if compactness_weight:
+        cx = sum(c[0] for c in coords) / n_residues
+        cy = sum(c[1] for c in coords) / n_residues
+        cz = sum(c[2] for c in coords) / n_residues
+        rg_squared = sum(
+            (c[0] - cx) ** 2 + (c[1] - cy) ** 2 + (c[2] - cz) ** 2
+            for c in coords
+        ) / n_residues
+        energy += compactness_weight * rg_squared
 
     return energy
