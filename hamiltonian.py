@@ -84,6 +84,7 @@ def path_energy_specific(
     sequence,
     overlap_penalty=30.0,
     contact_weight=1.0,
+    disulfide_bonus=-5.0,
 ):
     coords = bits_to_coords(bitstring)
     n_residues = len(sequence)
@@ -109,6 +110,12 @@ def path_energy_specific(
                     sequence[i],
                     sequence[j]
                 )
+
+                if (
+                    sequence[i].strip().upper() in ("C", "CYSTEINE")
+                    and sequence[j].strip().upper() in ("C", "CYSTEINE")
+                ):
+                    energy += disulfide_bonus
 
     return energy
 
