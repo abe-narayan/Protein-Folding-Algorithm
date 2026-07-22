@@ -43,7 +43,7 @@ def plot_protein(coords, sequence, title = None, min_energy=None):
     if min_energy is not None:
         title += f" (Energy: {min_energy})"
 
-    ax.set_title(title)
+    ax.set_title(title, pad = 20, fontsize = 12, fontweight = "bold")
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
@@ -143,7 +143,7 @@ if __name__ == "__main__":
     plot_protein(
         best_coords_aligned,
         sequence,
-        min_energy
+        min_energy=min_energy
     )
 
     plot_real_structure(

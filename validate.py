@@ -154,7 +154,8 @@ def main():
     )
     print(f"Results saved to: {CSV_OUTPUT}")
 
-    plot_protein(vqe_coords, SEQUENCE, vqe_energy)
+    plot_protein(vqe_coords, SEQUENCE, title=f"VQE Ground State Fold for '{SEQUENCE}'",
+        min_energy=vqe_energy)
     plt.show()
 
 if __name__ == "__main__":
