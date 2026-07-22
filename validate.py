@@ -7,6 +7,8 @@ guarantees. This is the first concrete quantum-vs-classical comparison and the
 seed a length-sweep scalability study can later wrap in a loop.
 """
 
+import csv
+import os
 import time
 
 import numpy as np
@@ -14,7 +16,6 @@ import numpy as np
 from encoding import bits_to_coords
 from hamiltonian import path_energy
 from vqe import run_vqe, best_fold_from_params
-
 
 # Small enough that brute force is exact and the circuit is cheap to simulate:
 # 5 residues -> 2 * (5 - 1) = 8 qubits (256 folds).
@@ -40,32 +41,48 @@ OPTIMIZATION_STEPS = 100
 # Tolerance for declaring the VQE energy a match to the brute-force minimum.
 MATCH_TOLERANCE = 1e-6
 
+# Keep generated results inside this repository regardless of the directory from
+# which this script is run.
+CSV_OUTPUT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "results",
+    "validation_results.csv",
+)
+
+def save_validation_result(filename, result_row):
+    """Append one completed validation run to a CSV file."""
+
+    output_parent = os.path.dirname(filename)
+    if output_parent:
+        os.makedirs(output_parent, exist_ok=True)
+
+    write_header = not os.path.exists(filename) or os.path.getsize(filename) == 0
+
+    with open(filename, "a", encoding="utf-8", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=result_row.keys())
+        if write_header:
+            writer.writeheader()
+        writer.writerow(result_row)
+
 
 def brute_force(sequence):
     """Enumerate every fold and return (min_energy, best_bitstring)."""
-
     n_qubits = 2 * (len(sequence) - 1)
-
     best_energy = None
     best_bitstring = None
 
     for idx in range(2 ** n_qubits):
-
         bitstring = format(idx, f"0{n_qubits}b")
         energy = path_energy(bitstring, sequence)
 
         if best_energy is None or energy < best_energy:
-
             best_energy = energy
             best_bitstring = bitstring
-
     return best_energy, best_bitstring
 
 
 def main():
-
     n_qubits = 2 * (len(SEQUENCE) - 1)
-
     print(f"Sequence: {SEQUENCE}   ({len(SEQUENCE)} residues, {n_qubits} qubits)")
     print(f"Seed: {SEED}")
     print()
@@ -74,7 +91,6 @@ def main():
     t0 = time.perf_counter()
     bf_energy, bf_bitstring = brute_force(SEQUENCE)
     bf_time = time.perf_counter() - t0
-
     print(
         f"Brute force:  min energy = {bf_energy:.2f}   "
         f"fold = |{bf_bitstring}>   ({bf_time:.2f} s)"
@@ -107,9 +123,33 @@ def main():
     # --- Verdict ---
     gap = vqe_energy - bf_energy
     matched = abs(gap) <= MATCH_TOLERANCE
-
     print()
     print(f"Match: {'YES' if matched else 'NO'}  (gap = {gap:.2f})")
+
+    save_validation_result(
+        CSV_OUTPUT,
+        {
+            "Sequence": SEQUENCE,
+            "Residues": len(SEQUENCE),
+            "Qubits": n_qubits,
+            "Seed": SEED,
+            "Alpha": ALPHA,
+            "Repetitions": REPETITIONS,
+            "Optimization Steps": OPTIMIZATION_STEPS,
+            "Objective Evaluations": len(history),
+            "Brute Force Energy": bf_energy,
+            "Brute Force Bitstring": bf_bitstring,
+            "Brute Force Time (s)": f"{bf_time:.6f}",
+            "VQE Energy": vqe_energy,
+            "VQE Bitstring": vqe_bitstring,
+            "Final CVaR": result.fun,
+            "Best CVaR": min(history) if history else result.fun,
+            "VQE Time (s)": f"{vqe_time:.6f}",
+            "Energy Gap": gap,
+            "Matched": matched,
+        },
+    )
+    print(f"Results saved to: {CSV_OUTPUT}")
 
 
 if __name__ == "__main__":
