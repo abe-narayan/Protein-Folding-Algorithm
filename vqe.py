@@ -150,3 +150,33 @@ def run_vqe(
 
 
     return result, history
+
+def get_best_structure(result, sequence, repetitions=1000):
+    from encoding import bits_to_coords
+
+    optimal_params = result.x
+    n_qubits = 2 * (len(sequence) - 1)
+    dev = qml.device("default.qubit", wires=n_qubits)
+
+    @qml.set_shots(shots=repetitions)
+    @qml.qnode(dev)
+    def circuit():
+        create_ansatz(optimal_params, n_qubits)
+        return qml.sample(wires=range(n_qubits))
+
+    samples = circuit()
+
+    best_energy = float("inf")
+    best_bitstring = ""
+
+    for sample in samples:
+        bitstring = "".join(str(int(bit)) for bit in sample)
+        energy = path_energy(bitstring, sequence)
+
+        if energy < best_energy:
+            best_energy = energy
+            best_bitstring = bitstring
+
+    best_coords = bits_to_coords(best_bitstring)
+
+    return best_bitstring, best_coords, best_energy
