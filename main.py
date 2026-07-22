@@ -1,6 +1,6 @@
 from hamiltonian import path_hamiltonian
 
-sequence = "HP+-H"
+sequence = "-HP+H-P-H"
 
 H = path_hamiltonian(sequence)
 
