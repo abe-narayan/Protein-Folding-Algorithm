@@ -1,20 +1,40 @@
-from local_hamiltonian import build_cost_function
+from vqe import run_vqe
 
 
-sequence = "HP+-HHP+-HHP+-"
+sequence = "HP+-HHP+-HHP+-H"
 
 
-cost_function = build_cost_function(sequence)
+result, history = run_vqe(
+    sequence=sequence,
+    alpha=0.1,
+    repetitions=1000,
+    optimization_steps=100
+)
 
 
-bitstring = "0000000000000000000000000000"
+print()
+print("Finished!")
+print()
 
+print("Sequence:")
+print(sequence)
 
-energy = cost_function(bitstring)
+print()
 
+print("Number of amino acids:")
+print(len(sequence))
 
-print("Sequence:", sequence)
-print("Number of amino acids:", len(sequence))
-print("Number of qubits:", 2 * (len(sequence) - 1))
-print("Bitstring:", bitstring)
-print("Energy:", energy)
+print()
+
+print("Number of qubits:")
+print(2 * (len(sequence) - 1))
+
+print()
+
+print("Best CVaR:")
+print(result.fun)
+
+print()
+
+print("Best parameters:")
+print(result.x)
