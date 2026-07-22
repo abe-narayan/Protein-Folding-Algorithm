@@ -46,11 +46,8 @@ def _sample_energies_filter(probs, sequence, n_qubits, shots, rng):
     nonzero_idx = np.flatnonzero(nonzero_filt)
     nonzero_probs = probs[nonzero_idx]
     nonzero_probs /= nonzero_probs.sum()
-    
-    # 2. Sample ONLY from active states (thousands of times faster)
     sampled_indices = rng.choice(nonzero_idx, size=shots, p=nonzero_probs)
     unique_indices = np.unique(sampled_indices)
-    
     fmt = f"0{n_qubits}b"
     energy_map = {idx: path_energy(format(idx, fmt), sequence) for idx in unique_indices}
     return np.array([energy_map[idx] for idx in sampled_indices])
