@@ -37,6 +37,24 @@ length increases.
 | `main.py` | Entry point for running the VQE |
 | `results/` | Generated data and figures (planned) |
 
+## Dependencies
+
+The project requires Python 3 and the following packages (all pinned in
+`requirements.txt`):
+
+| Package | Used for |
+| --- | --- |
+| `numpy` | Numerical arrays and linear algebra |
+| `scipy` | Classical optimizer (`scipy.optimize.minimize`) |
+| `matplotlib` | Plotting protein structures and results |
+| `pennylane` | Quantum circuits and the VQE (`pennylane as qml`) |
+| `networkx` | Graph utilities for the lattice model |
+| `biopython` | Parsing reference PDB structures (`Bio.PDB.PDBParser`) |
+| `jupyter` | Running exploratory notebooks |
+
+The standard-library modules `csv`, `os`, and `time` are also used but require no
+installation.
+
 ## Setup
 
 ```bash
