@@ -13,6 +13,8 @@ import time
 
 import numpy as np
 
+import matplotlib.pyplot as plt
+
 from encoding import bits_to_coords
 from hamiltonian import path_energy
 from vqe import run_vqe, best_fold_from_params
@@ -151,7 +153,9 @@ def main():
         },
     )
     print(f"Results saved to: {CSV_OUTPUT}")
+
     plot_protein(vqe_coords, SEQUENCE, vqe_energy)
+    plt.show()
 
 if __name__ == "__main__":
     main()

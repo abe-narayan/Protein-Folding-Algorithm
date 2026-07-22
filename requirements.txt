@@ -4,3 +4,4 @@ matplotlib
 pennylane
 networkx
 jupyter
+Bio
