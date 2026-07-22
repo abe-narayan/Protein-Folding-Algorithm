@@ -1,4 +1,4 @@
-import cirq
+import pennylane as qml
 import numpy as np
 
 from scipy.optimize import minimize
@@ -11,35 +11,21 @@ def create_ansatz(
     n_qubits
 ):
 
-    qubits = cirq.LineQubit.range(n_qubits)
-
-    circuit = cirq.Circuit()
-
     for i in range(n_qubits):
 
-        circuit.append(
-            cirq.ry(params[i])(
-                qubits[i]
-            )
+        qml.RY(
+            params[i],
+            wires=i
         )
 
     for i in range(n_qubits - 1):
 
-        circuit.append(
-            cirq.CNOT(
-                qubits[i],
-                qubits[i + 1]
-            )
+        qml.CNOT(
+            wires=[
+                i,
+                i + 1
+            ]
         )
-
-    circuit.append(
-        cirq.measure(
-            *qubits,
-            key="result"
-        )
-    )
-
-    return circuit
 
 
 def calculate_cvar(
@@ -51,19 +37,27 @@ def calculate_cvar(
 
     n_qubits = 2 * (len(sequence) - 1)
 
-    circuit = create_ansatz(
-        params,
-        n_qubits
+    dev = qml.device(
+        "default.qubit",
+        wires=n_qubits,
+        shots=repetitions
     )
 
-    simulator = cirq.Simulator()
 
-    result = simulator.run(
-        circuit,
-        repetitions=repetitions
-    )
+    @qml.qnode(dev)
+    def circuit():
 
-    samples = result.measurements["result"]
+        create_ansatz(
+            params,
+            n_qubits
+        )
+
+        return qml.sample(
+            wires=range(n_qubits)
+        )
+
+
+    samples = circuit()
 
     energies = []
 
@@ -73,14 +67,17 @@ def calculate_cvar(
 
         for bit in sample:
 
-            bitstring += str(bit)
+            bitstring += str(int(bit))
 
         energy = path_energy(
             bitstring,
             sequence
         )
 
-        energies.append(energy)
+        energies.append(
+            energy
+        )
+
 
     energies.sort()
 
@@ -117,7 +114,10 @@ def run_vqe(
 
     history = []
 
-    def objective(current_params):
+
+    def objective(
+        current_params
+    ):
 
         cvar = calculate_cvar(
             current_params,
@@ -126,7 +126,9 @@ def run_vqe(
             repetitions
         )
 
-        history.append(cvar)
+        history.append(
+            cvar
+        )
 
         print(
             "Step:",
@@ -137,6 +139,7 @@ def run_vqe(
 
         return cvar
 
+
     result = minimize(
         objective,
         params,
@@ -145,5 +148,6 @@ def run_vqe(
             "maxiter": optimization_steps
         }
     )
+
 
     return result, history
