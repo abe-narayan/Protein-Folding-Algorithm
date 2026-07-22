@@ -3,4 +3,6 @@ scipy
 matplotlib
 pennylane
 networkx
+biopython
 jupyter
+Bio

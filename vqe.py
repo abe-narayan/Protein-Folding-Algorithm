@@ -1,4 +1,6 @@
 import numpy as np
+import os
+os.environ["OMP_NUM_THREADS"] = str(os.cpu_count() or 4)
 import pennylane as qml
 from scipy.optimize import minimize
 
@@ -31,27 +33,29 @@ def _build_probs_circuit(n_qubits, layers):
 
 def _sample_energies(probs, sequence, n_qubits, shots, rng):
     probs = np.asarray(probs, dtype=np.float64)
-    probs = probs / probs.sum()  
+    probs /= probs.sum()  
     indices = rng.choice(len(probs), size=shots, p=probs)
+    unique_indices = np.unique(indices)    
     fmt = f"0{n_qubits}b"
-    return np.array([path_energy(format(idx, fmt), sequence) for idx in indices])
+    energy_map = {idx: path_energy(format(idx, fmt), sequence) for idx in unique_indices}
+    return np.array([energy_map[idx] for idx in indices])
 
+def _sample_energies_filter(probs, sequence, n_qubits, shots, rng):
+    probs = np.asarray(probs, dtype=np.float64)
+    nonzero_filt = probs > 1e-12
+    nonzero_idx = np.flatnonzero(nonzero_filt)
+    nonzero_probs = probs[nonzero_idx]
+    nonzero_probs /= nonzero_probs.sum()
+    sampled_indices = rng.choice(nonzero_idx, size=shots, p=nonzero_probs)
+    unique_indices = np.unique(sampled_indices)
+    fmt = f"0{n_qubits}b"
+    energy_map = {idx: path_energy(format(idx, fmt), sequence) for idx in unique_indices}
+    return np.array([energy_map[idx] for idx in sampled_indices])
 
 def _cvar(energies, alpha):
     energies_sorted = np.sort(energies)
     keep = max(1, int(alpha * len(energies_sorted)))
     return float(energies_sorted[:keep].mean())
-
-
-def calculate_cvar(params, sequence, alpha=0.1, repetitions=1000, seed=None, layers=3):
-    """Exact circuit + finite-shot CVaR estimate for one parameter vector."""
-    n_qubits = 2 * (len(sequence) - 1)
-    circuit = _build_probs_circuit(n_qubits, layers)
-    probs = circuit(params)
-    rng = np.random.default_rng(seed)
-    energies = _sample_energies(probs, sequence, n_qubits, repetitions, rng)
-    return _cvar(energies, alpha)
-
 
 
 
@@ -77,8 +81,7 @@ def _robust_estimate(circuit, sequence, n_qubits, params, shots, alpha, seed, n_
 
 
 
-def _single_vqe_run(sequence, alpha, repetitions, optimization_steps, seed, layers):
-    n_qubits = 2 * (len(sequence) - 1)
+def _single_vqe_run(sequence, alpha, repetitions, optimization_steps, seed, layers, circuit, n_qubits):
     n_params = layers * n_qubits
 
     init_seed, low_seed, mid_seed, high_seed, eval_seed = _spawn_seeds(seed, 5)
@@ -142,6 +145,8 @@ def _single_vqe_run(sequence, alpha, repetitions, optimization_steps, seed, laye
 
 
 def run_vqe(sequence, alpha=0.1, repetitions=1000, optimization_steps=100, seed=42, layers=3, restarts=5):
+    n_qubits = 2 * (len(sequence) - 1)
+    circuit = _build_probs_circuit(n_qubits, layers)
     restart_seeds = _spawn_seeds(seed, restarts)
 
     best_result = None
@@ -149,7 +154,7 @@ def run_vqe(sequence, alpha=0.1, repetitions=1000, optimization_steps=100, seed=
 
     for i, restart_seed in enumerate(restart_seeds):
         print(f"--- Restart {i + 1}/{restarts} ---")
-        result, history = _single_vqe_run(sequence, alpha, repetitions, optimization_steps, restart_seed, layers)
+        result, history = _single_vqe_run(sequence, alpha, repetitions, optimization_steps, restart_seed, layers, circuit, n_qubits)
 
         if best_result is None or result.fun < best_result.fun:
             best_result = result
@@ -167,16 +172,18 @@ def best_fold_from_params(params, sequence, repetitions=1000, seed=42, layers=3)
 
     rng = np.random.default_rng(seed)
     probs_arr = np.asarray(probs, dtype=np.float64)
-    probs_arr = probs_arr / probs_arr.sum()
+    probs_arr /= probs_arr.sum()
+
     indices = rng.choice(len(probs_arr), size=repetitions, p=probs_arr)
+    unique_indices = np.unique(indices)
     fmt = f"0{n_qubits}b"
 
-    best_energy = None
+    best_energy = float('inf')
     best_bitstring = None
-    for idx in indices:
+    for idx in unique_indices:
         bitstring = format(idx, fmt)
         energy = path_energy(bitstring, sequence)
-        if best_energy is None or energy < best_energy:
+        if energy < best_energy:
             best_energy = energy
             best_bitstring = bitstring
 

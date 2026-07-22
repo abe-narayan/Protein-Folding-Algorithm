@@ -5,23 +5,16 @@ from hamiltonian import ONE_LETTER_TO_FULL
 from real_structure import get_ca_coords, normalize_coords, kabsch_align
 
 
-def plot_protein(coords, sequence, min_energy=None):
+def plot_protein(coords, sequence, title = None, min_energy=None):
     fig = plt.figure(figsize=(8, 6))
     ax = fig.add_subplot(111, projection="3d")
 
-    color_map = {}
-
-    for aa in "AVLIMFWC":
-        color_map[aa] = "red"
-
-    for aa in "STNQGYP":
-        color_map[aa] = "blue"
-
-    for aa in "KRH":
-        color_map[aa] = "green"
-
-    for aa in "DE":
-        color_map[aa] = "orange"
+    color_map = {
+        **{aa: "red" for aa in "AVLIMFWC"},
+        **{aa: "blue" for aa in "STNQGYP"},
+        **{aa: "green" for aa in "KRH"},
+        **{aa: "orange" for aa in "DE"}
+    }
 
     xs = [c[0] for c in coords]
     ys = [c[1] for c in coords]
@@ -45,12 +38,12 @@ def plot_protein(coords, sequence, min_energy=None):
             fontsize=9
         )
 
-    title = f"3D Structure for '{sequence}'"
-
+    if title is None:
+        title = f"3D Structure for '{sequence}'"
     if min_energy is not None:
         title += f" (Energy: {min_energy})"
 
-    ax.set_title(title)
+    ax.set_title(title, pad = 20, fontsize = 12, fontweight = "bold")
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
@@ -147,7 +140,7 @@ if __name__ == "__main__":
     plot_protein(
         best_coords_aligned,
         sequence,
-        min_energy
+        min_energy=min_energy
     )
 
     plot_real_structure(
