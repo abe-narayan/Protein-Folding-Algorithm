@@ -1,10 +1,10 @@
 import matplotlib.pyplot as plt
 from vqe import get_best_structure, run_vqe
 
-sequence = "HP+-H--+-PPH+H"
+sequence = "HP+-H--+-P+H"
 
 result, history = run_vqe(
-    sequence=sequence, alpha=0.5, repetitions=100, optimization_steps=10
+    sequence=sequence, alpha=0.5, repetitions=100, optimization_steps=30
 )
 
 best_bitstring, best_coords, min_energy = get_best_structure(
