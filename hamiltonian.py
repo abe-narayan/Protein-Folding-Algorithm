@@ -1,5 +1,5 @@
-from encoding import bits_to_coords
-
+import numpy as np
+from encoding import bits_to_coords, DIRECTIONS
 
 AMINO_ACIDS = [
     "CYSTEINE", "METHIONINE", "PHENYLALANINE", "ISOLEUCINE", "LEUCINE",
@@ -82,16 +82,11 @@ def get_interaction(aa1: str, aa2: str) -> float:
 def path_energy_specific(
     bitstring,
     sequence,
-    overlap_penalty=None,
+    overlap_penalty=30.0,
     contact_weight=1.0,
-    compactness_weight=0.5,
 ):
     coords = bits_to_coords(bitstring)
     n_residues = len(sequence)
-
-    if overlap_penalty is None:
-        n_pairs = n_residues * (n_residues - 1) // 2
-        overlap_penalty = contact_weight * _MAX_PAIR_ENERGY * n_pairs + 1.0
 
     energy = 0.0
 
@@ -102,29 +97,18 @@ def path_energy_specific(
 
     for i in range(n_residues):
         for j in range(i + 2, n_residues):
+
             dx = coords[i][0] - coords[j][0]
             dy = coords[i][1] - coords[j][1]
             dz = coords[i][2] - coords[j][2]
 
-            if dx * dx + dy * dy + dz * dz == 8:
+            distance_squared = dx * dx + dy * dy + dz * dz
+
+            if distance_squared == 8:
                 energy += contact_weight * get_interaction(
                     sequence[i],
                     sequence[j]
                 )
-
-    if compactness_weight:
-        cx = sum(c[0] for c in coords) / n_residues
-        cy = sum(c[1] for c in coords) / n_residues
-        cz = sum(c[2] for c in coords) / n_residues
-
-        rg_squared = sum(
-            (c[0] - cx) ** 2
-            + (c[1] - cy) ** 2
-            + (c[2] - cz) ** 2
-            for c in coords
-        ) / n_residues
-
-        energy += compactness_weight * rg_squared
 
     return energy
 
@@ -135,3 +119,49 @@ def path_energy(bitstring, sequence, overlap_penalty=30.0):
         sequence,
         overlap_penalty=overlap_penalty
     )
+
+def real_structure_to_bitstring(coords):
+    coords = np.array(coords, dtype=np.float64)
+
+    directions = []
+
+    for i in range(len(coords) - 1):
+
+        bond = coords[i + 1] - coords[i]
+
+        bond_length = np.linalg.norm(bond)
+
+        if bond_length == 0:
+            raise ValueError(
+                f"Zero-length bond between residues {i} and {i + 1}"
+            )
+
+        bond = bond / bond_length
+
+        best_direction = None
+        best_similarity = -float("inf")
+
+        for bits, direction in DIRECTIONS.items():
+
+            direction = np.array(
+                direction,
+                dtype=np.float64
+            )
+
+            direction = direction / np.linalg.norm(direction)
+
+            similarity = np.dot(bond, direction)
+
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_direction = bits
+
+        directions.append(best_direction)
+
+    bitstring = "".join(
+        str(bit)
+        for direction in directions
+        for bit in direction
+    )
+
+    return bitstring

@@ -8,7 +8,30 @@ from encoding import bits_to_coords
 from hamiltonian import path_energy
 
 
-def create_ansatz(params, n_qubits, layers=3):
+class VQEStateTracker:
+    def __init__(self, sequence):
+        self.sequence = sequence
+        self.energy_cache = {}
+        self.best_energy = float('inf')
+        self.best_bitstring = None
+        self.best_coords = None
+
+    def evaluate(self, bitstring):
+        if bitstring in self.energy_cache:
+            return self.energy_cache[bitstring]
+        
+        energy = path_energy(bitstring, self.sequence)
+        self.energy_cache[bitstring] = energy
+        
+        if energy < self.best_energy:
+            self.best_energy = energy
+            self.best_bitstring = bitstring
+            self.best_coords = bits_to_coords(bitstring)
+            
+        return energy
+
+
+def create_ansatz(params, n_qubits, layers=4):
     idx = 0
     for _ in range(layers):
         for i in range(n_qubits):
@@ -16,8 +39,6 @@ def create_ansatz(params, n_qubits, layers=3):
             idx += 1
         for i in range(n_qubits - 1):
             qml.CNOT(wires=[i, i + 1])
-
-
 
 
 def _build_probs_circuit(n_qubits, layers):
@@ -31,32 +52,10 @@ def _build_probs_circuit(n_qubits, layers):
     return circuit
 
 
-def _sample_energies(probs, sequence, n_qubits, shots, rng):
-    probs = np.asarray(probs, dtype=np.float64)
-    probs /= probs.sum()  
-    indices = rng.choice(len(probs), size=shots, p=probs)
-    unique_indices = np.unique(indices)    
-    fmt = f"0{n_qubits}b"
-    energy_map = {idx: path_energy(format(idx, fmt), sequence) for idx in unique_indices}
-    return np.array([energy_map[idx] for idx in indices])
-
-def _sample_energies_filter(probs, sequence, n_qubits, shots, rng):
-    probs = np.asarray(probs, dtype=np.float64)
-    nonzero_filt = probs > 1e-12
-    nonzero_idx = np.flatnonzero(nonzero_filt)
-    nonzero_probs = probs[nonzero_idx]
-    nonzero_probs /= nonzero_probs.sum()
-    sampled_indices = rng.choice(nonzero_idx, size=shots, p=nonzero_probs)
-    unique_indices = np.unique(sampled_indices)
-    fmt = f"0{n_qubits}b"
-    energy_map = {idx: path_energy(format(idx, fmt), sequence) for idx in unique_indices}
-    return np.array([energy_map[idx] for idx in sampled_indices])
-
 def _cvar(energies, alpha):
     energies_sorted = np.sort(energies)
     keep = max(1, int(alpha * len(energies_sorted)))
     return float(energies_sorted[:keep].mean())
-
 
 
 def _spawn_seeds(seed, n):
@@ -65,131 +64,79 @@ def _spawn_seeds(seed, n):
     return [int(s.generate_state(1)[0]) for s in np.random.SeedSequence(seed).spawn(n)]
 
 
-def _robust_estimate(circuit, sequence, n_qubits, params, shots, alpha, seed, n_repeats=3):
-    """Average CVaR over several independent shot draws, for a fair,
-    low-variance comparison across restarts (instead of one noisy read)."""
-    probs = circuit(params)
-    repeat_seeds = _spawn_seeds(seed, n_repeats)
-    scores = []
-    for rseed in repeat_seeds:
-        rng = np.random.default_rng(rseed)
-        energies = _sample_energies(probs, sequence, n_qubits, shots, rng)
-        scores.append(_cvar(energies, alpha))
-    return float(np.mean(scores))
-
-
-
-
-
-def _single_vqe_run(sequence, alpha, repetitions, optimization_steps, seed, layers, circuit, n_qubits):
+def _single_vqe_run(sequence, alpha, shots, optimization_steps, seed, layers, circuit, n_qubits, tracker):
     n_params = layers * n_qubits
-
-    init_seed, low_seed, mid_seed, high_seed, eval_seed = _spawn_seeds(seed, 5)
-
-
-    rng_init = np.random.default_rng(init_seed)
+    rng_init = np.random.default_rng(seed)
     params0 = rng_init.normal(loc=0.0, scale=0.1, size=n_params)
-
-    circuit = _build_probs_circuit(n_qubits, layers)
-
-    low_shots = max(100, repetitions // 4)
-    mid_shots = max(200, repetitions // 2)
-    high_shots = repetitions
-    third = max(1, optimization_steps // 3)
 
     history = []
     call_count = 0
-    best_high_energy = None
-    best_high_params = None
 
     def objective(params):
-        nonlocal call_count, best_high_energy, best_high_params
+        nonlocal call_count
         call_count += 1
-
-        if call_count <= third:
-            shots, stage_seed, stage_name = low_shots, low_seed, "low"
-        elif call_count <= 2 * third:
-            shots, stage_seed, stage_name = mid_shots, mid_seed, "mid"
-        else:
-            shots, stage_seed, stage_name = high_shots, high_seed, "high"
-
+        
+        rng = np.random.default_rng(seed)
+        
         probs = circuit(params)
-        rng = np.random.default_rng(stage_seed)  # same seed within a tier -> CRN
-        energies = _sample_energies(probs, sequence, n_qubits, shots, rng)
-        cvar = _cvar(energies, alpha)
-        history.append(cvar)
-        print(f"  call {call_count:3d} [{stage_name:>4s} shots={shots:4d}] CVaR={cvar:.4f}")
+        probs = np.asarray(probs, dtype=np.float64)
+        
+        probs = np.clip(probs, 0, 1)
+        probs /= probs.sum()  
 
-        if stage_name == "high" and (best_high_energy is None or cvar < best_high_energy):
-            best_high_energy = cvar
-            best_high_params = params.copy()
+        indices = rng.choice(len(probs), size=shots, p=probs)
+        unique_indices = np.unique(indices)
+        fmt = f"0{n_qubits}b"
+        
+        val_map = {}
+        for idx in unique_indices:
+            bstr = format(idx, fmt)
+            val_map[idx] = tracker.evaluate(bstr)
+            
+        energies = np.array([val_map[idx] for idx in indices])
+        cvar = _cvar(energies, alpha)
+        
+        history.append(cvar)
+        if call_count % 10 == 0 or call_count == 1:
+            print(f"  eval {call_count:3d} | CVaR: {cvar:.4f} | Global Best: {tracker.best_energy:.4f}")
 
         return cvar
 
     result = minimize(
         objective,
         params0,
-        method="COBYLA",
-        options={"maxiter": optimization_steps, "rhobeg": 0.3},
+        method="L-BFGS-B",
+        options={"maxiter": optimization_steps, "maxfun": optimization_steps * 3, "eps": 1e-3},
     )
-
-    if best_high_energy is not None and best_high_energy < result.fun:
-        result.x = best_high_params
-        result.fun = best_high_energy
-
-
-    result.fun = _robust_estimate(circuit, sequence, n_qubits, result.x, high_shots, alpha, eval_seed)
 
     return result, history
 
 
-
-def run_vqe(sequence, alpha=0.1, repetitions=1000, optimization_steps=100, seed=42, layers=3, restarts=5):
+def run_vqe(sequence, alpha=0.1, repetitions=1200, optimization_steps=120, seed=42, layers=4, restarts=6):
     n_qubits = 2 * (len(sequence) - 1)
     circuit = _build_probs_circuit(n_qubits, layers)
     restart_seeds = _spawn_seeds(seed, restarts)
 
+    tracker = VQEStateTracker(sequence)
+    
     best_result = None
     best_history = None
 
     for i, restart_seed in enumerate(restart_seeds):
         print(f"--- Restart {i + 1}/{restarts} ---")
-        result, history = _single_vqe_run(sequence, alpha, repetitions, optimization_steps, restart_seed, layers, circuit, n_qubits)
+        result, history = _single_vqe_run(
+            sequence, alpha, repetitions, optimization_steps, 
+            restart_seed, layers, circuit, n_qubits, tracker
+        )
 
         if best_result is None or result.fun < best_result.fun:
             best_result = result
             best_history = history
 
+    best_result.tracker = tracker
     return best_result, best_history
 
 
-
-
-def best_fold_from_params(params, sequence, repetitions=1000, seed=42, layers=3):
-    n_qubits = 2 * (len(sequence) - 1)
-    circuit = _build_probs_circuit(n_qubits, layers)
-    probs = circuit(params)
-
-    rng = np.random.default_rng(seed)
-    probs_arr = np.asarray(probs, dtype=np.float64)
-    probs_arr /= probs_arr.sum()
-
-    indices = rng.choice(len(probs_arr), size=repetitions, p=probs_arr)
-    unique_indices = np.unique(indices)
-    fmt = f"0{n_qubits}b"
-
-    best_energy = float('inf')
-    best_bitstring = None
-    for idx in unique_indices:
-        bitstring = format(idx, fmt)
-        energy = path_energy(bitstring, sequence)
-        if energy < best_energy:
-            best_energy = energy
-            best_bitstring = bitstring
-
-    best_coords = bits_to_coords(best_bitstring)
-    return best_bitstring, best_coords, best_energy
-
-
-def get_best_structure(result, sequence, repetitions=1000, seed=42, layers=3):
-    return best_fold_from_params(result.x, sequence, repetitions=repetitions, seed=seed, layers=layers)
+def get_best_structure(result, sequence, repetitions=1200, seed=42, layers=4):
+    tracker = result.tracker
+    return tracker.best_bitstring, tracker.best_coords, tracker.best_energy
