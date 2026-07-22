@@ -111,8 +111,8 @@ def plot_real_structure(real_coords, sequence, pdb_id="7OFG"):
 
 if __name__ == "__main__":
 
-    sequence = "CYIQNCPLG"
-    pdb_id = "7OFG"
+    sequence = "GYDPETGTWG"
+    pdb_id = "1UAO"
     result, history = run_vqe(
         sequence=sequence,
         alpha=0.5,
@@ -127,7 +127,7 @@ if __name__ == "__main__":
     )
 
     real_coords_raw = get_ca_coords(
-    "7OFG.pdb",
+    "pdbs/1UAO.pdb",
     chain_id="A"
     )
 
