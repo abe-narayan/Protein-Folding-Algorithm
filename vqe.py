@@ -32,7 +32,8 @@ def calculate_cvar(
     params,
     sequence,
     alpha=0.1,
-    repetitions=1000
+    repetitions=1000,
+    seed=None
 ):
 
     n_qubits = 2 * (len(sequence) - 1)
@@ -40,6 +41,7 @@ def calculate_cvar(
     dev = qml.device(
         "default.qubit",
         wires=n_qubits,
+        seed=seed,
     )
 
     @qml.set_shots(shots=repetitions)
@@ -100,10 +102,14 @@ def run_vqe(
     sequence,
     alpha=0.1,
     repetitions=1000,
-    optimization_steps=100
+    optimization_steps=100,
+    seed=None
 ):
 
     n_qubits = 2 * (len(sequence) - 1)
+
+    if seed is not None:
+        np.random.seed(seed)
 
     params = np.random.uniform(
         0,
@@ -122,7 +128,8 @@ def run_vqe(
             current_params,
             sequence,
             alpha,
-            repetitions
+            repetitions,
+            seed=seed
         )
 
         history.append(
@@ -151,16 +158,41 @@ def run_vqe(
 
     return result, history
 
+<<<<<<< HEAD
 def get_best_structure(result, sequence, repetitions=1000):
     from encoding import bits_to_coords
 
     optimal_params = result.x
     n_qubits = 2 * (len(sequence) - 1)
     dev = qml.device("default.qubit", wires=n_qubits)
+=======
+
+def best_fold_from_params(
+    params,
+    sequence,
+    repetitions=1000,
+    seed=None
+):
+    """Sample the optimized circuit and return the lowest-energy fold it produced.
+
+    The CVaR objective drives the distribution toward low energy; the actual
+    ground-state candidate is read out by taking the minimum-energy bitstring
+    among the samples.
+    """
+
+    n_qubits = 2 * (len(sequence) - 1)
+
+    dev = qml.device(
+        "default.qubit",
+        wires=n_qubits,
+        seed=seed,
+    )
+>>>>>>> af32307e449e32abe64f0777e4594d3a761e2b35
 
     @qml.set_shots(shots=repetitions)
     @qml.qnode(dev)
     def circuit():
+<<<<<<< HEAD
         create_ansatz(optimal_params, n_qubits)
         return qml.sample(wires=range(n_qubits))
 
@@ -180,3 +212,37 @@ def get_best_structure(result, sequence, repetitions=1000):
     best_coords = bits_to_coords(best_bitstring)
 
     return best_bitstring, best_coords, best_energy
+=======
+
+        create_ansatz(
+            params,
+            n_qubits
+        )
+
+        return qml.sample(
+            wires=range(n_qubits)
+        )
+
+    samples = circuit()
+
+    best_energy = None
+    best_bitstring = None
+
+    for sample in samples:
+
+        bitstring = "".join(
+            str(int(bit)) for bit in sample
+        )
+
+        energy = path_energy(
+            bitstring,
+            sequence
+        )
+
+        if best_energy is None or energy < best_energy:
+
+            best_energy = energy
+            best_bitstring = bitstring
+
+    return best_energy, best_bitstring
+>>>>>>> af32307e449e32abe64f0777e4594d3a761e2b35

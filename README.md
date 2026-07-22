@@ -32,9 +32,10 @@ length increases.
 | `encoding.py` | Lattice model and turn-based encoding of folding configurations |
 | `hamiltonian.py` | Construction of the cost Hamiltonian from a sequence |
 | `vqe.py` | Ansatz, CVaR objective, and the variational optimization loop |
-| `classical.py` | Classical baselines (brute-force search, simulated annealing) |
-| `main.py` | Entry point for running the scalability comparison |
-| `results/` | Generated data and figures |
+| `local_hamiltonian.py` | Cost-function wrapper over the energy model |
+| `classical.py` | Classical baseline (exhaustive brute-force search) |
+| `main.py` | Entry point for running the VQE |
+| `results/` | Generated data and figures (planned) |
 
 ## Setup
 
@@ -45,7 +46,14 @@ python main.py
 
 ## Status
 
-Work in progress. A working prototype of the 2-qubit toy model (2D lattice,
-CVaR-VQE with a brute-force benchmark) exists as a notebook; the module files above
-are still being filled in, and the scalability study across protein lengths is not yet
-implemented.
+Work in progress. The core module files are now implemented: the turn-based lattice
+encoding, the cost Hamiltonian / energy model, an exhaustive brute-force search, and a
+CVaR-optimized VQE with its ansatz and optimization loop.
+
+Still to do:
+
+- Connect the VQE and brute-force search into a single-sequence validation harness that
+  confirms the VQE recovers the true minimum-energy fold on small proteins.
+- Add the simulated-annealing classical baseline.
+- Implement the scalability study across protein lengths (runtime, accuracy, and
+  resource requirements) and generate the comparison plots.
