@@ -1,4 +1,6 @@
 import numpy as np
+import os
+os.environ["OMP_NUM_THREADS"] = str(os.cpu_count() or 4)
 import pennylane as qml
 from scipy.optimize import minimize
 
