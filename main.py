@@ -1,7 +1,7 @@
 import os
 
 import matplotlib.pyplot as plt
-
+from encoding import bits_to_coords
 from vqe import get_best_structure, run_vqe
 from hamiltonian import ONE_LETTER_TO_FULL, path_energy
 from real_structure import (
@@ -126,28 +126,91 @@ if __name__ == "__main__":
         repetitions=1000
     )
 
-    real_coords_raw = get_ca_coords("7OFG.pdb", chain_id="A")
+    real_coords_raw = get_ca_coords(
+    "7OFG.pdb",
+    chain_id="A"
+    )
+
 
     real_bitstring = real_structure_to_bitstring(
         real_coords_raw
     )
 
+    real_fitted_coords = bits_to_coords(
+        real_bitstring
+    )
+
     real_energy = path_energy(
         real_bitstring,
         sequence
-)
-    
-    print("Real structure bitstring:", real_bitstring)
-    
-    real_coords = normalize_coords(real_coords_raw)
-    best_coords_norm = normalize_coords(best_coords)
+    )
+
+    print()
+    print("========== REAL STRUCTURE FITTED TO LATTICE ==========")
+
+    print(
+        "Fitted real structure bitstring:",
+        real_bitstring
+    )
+
+    print(
+        "Fitted real structure energy:",
+        real_energy
+    )
+
+    print(
+        "Fitted real structure coordinates:"
+    )
+
+    for i, (res, coord) in enumerate(
+        zip(sequence, real_fitted_coords)
+    ):
+
+        print(
+            f"Residue {i + 1} ({res}): {coord}"
+        )
+
+    print()
+    print("=======================================================")
+
+    real_coords = normalize_coords(
+        real_coords_raw
+    )
+
+    best_coords_norm = normalize_coords(
+        best_coords
+    )
 
     best_coords_aligned = kabsch_align(
         best_coords_norm,
         real_coords
     )
 
-    fold_rmsd = rmsd(best_coords_aligned, real_coords)
+    fold_rmsd = rmsd(
+        best_coords_aligned,
+        real_coords
+    )
+    print()
+    print("============== ENERGY COMPARISON ==============")
+
+    print(
+    f"VQE optimized structure energy: "
+    f"{min_energy:.6f}"
+    )
+
+    print(
+        f"Fitted real structure energy: "
+        f"{real_energy:.6f}"
+    )
+
+    print(
+        f"Energy difference: "
+        f"{min_energy - real_energy:.6f}"
+    )
+
+    print(
+        "==============================================="
+    )
 
     print("Optimal Bitstring:", best_bitstring)
     print("Lowest Energy:", min_energy)

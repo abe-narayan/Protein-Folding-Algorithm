@@ -186,13 +186,13 @@ def real_structure_to_bitstring(
         current_bitstring
     )
 
-    _, current_rmsd = fit_lattice_to_real(
+    _, current_score = fit_lattice_to_real(
         current_coords,
         coords
     )
 
     best_bits = current_bits.copy()
-    best_rmsd = current_rmsd
+    best_score = current_score
 
     current_temperature = temperature
 
@@ -216,13 +216,12 @@ def real_structure_to_bitstring(
             new_bitstring
         )
 
-        _, new_rmsd = fit_lattice_to_real(
+        _, new_score = fit_lattice_to_real(
             new_coords,
             coords
         )
 
-        difference = new_rmsd - current_rmsd
-
+        difference = new_score - current_score
         if (
             difference < 0
             or random.random()
@@ -232,12 +231,12 @@ def real_structure_to_bitstring(
         ):
 
             current_bits = new_bits
-            current_rmsd = new_rmsd
+            current_score = new_score
 
-        if current_rmsd < best_rmsd:
+        if current_score < best_score:
 
             best_bits = current_bits.copy()
-            best_rmsd = current_rmsd
+            best_score = current_score
 
         current_temperature *= cooling_rate
 
@@ -250,8 +249,8 @@ def real_structure_to_bitstring(
     )
 
     print(
-        f"Closest tetrahedral lattice RMSD: "
-        f"{best_rmsd:.4f}"
+        f"Closest tetrahedral lattice fitting score: "
+        f"{best_score:.4f}"
     )
 
     return best_bitstring

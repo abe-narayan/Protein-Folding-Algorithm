@@ -113,11 +113,17 @@ def path_energy_specific(
     return energy
 
 
-def path_energy(bitstring, sequence, overlap_penalty=30.0):
+def path_energy(
+    bitstring,
+    sequence,
+    overlap_penalty=30.0,
+    contact_weight=1.0
+):
     return path_energy_specific(
         bitstring,
         sequence,
-        overlap_penalty=overlap_penalty
+        overlap_penalty=overlap_penalty,
+        contact_weight=contact_weight
     )
 
 def real_structure_to_bitstring(coords):
