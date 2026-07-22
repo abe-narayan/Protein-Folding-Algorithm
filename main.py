@@ -2,10 +2,10 @@ import matplotlib.pyplot as plt
 from vqe import get_best_structure, run_vqe
 from hamiltonian import ONE_LETTER_TO_FULL
 
-sequence = "HP+-H--+-P+H"
+sequence = "RPPGFSPFR"
 
 result, history = run_vqe(
-    sequence=sequence, alpha=0.5, repetitions=100, optimization_steps=30
+    sequence=sequence, alpha=0.5, repetitions=2500, optimization_steps=200
 )
 
 best_bitstring, best_coords, min_energy = get_best_structure(
