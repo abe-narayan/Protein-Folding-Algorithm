@@ -1,8 +1,10 @@
+import os
+
 import matplotlib.pyplot as plt
 
 from vqe import get_best_structure, run_vqe
 from hamiltonian import ONE_LETTER_TO_FULL
-from real_structure import get_ca_coords, normalize_coords, kabsch_align
+from real_structure import get_ca_coords, normalize_coords, kabsch_align, rmsd
 
 
 def plot_protein(coords, sequence, title = None, min_energy=None):
@@ -104,6 +106,7 @@ def plot_real_structure(real_coords, sequence, pdb_id="2KS9"):
 if __name__ == "__main__":
 
     sequence = "CYIQNCPLG"
+    pdb_id = "7OFG"
     result, history = run_vqe(
         sequence=sequence,
         alpha=0.5,
@@ -118,7 +121,7 @@ if __name__ == "__main__":
     )
 
 
-    real_coords = get_ca_coords("7OFG.pdb", chain_id="A")
+    real_coords = get_ca_coords(f"{pdb_id}.pdb", chain_id="A")
 
     real_coords = normalize_coords(real_coords)
     best_coords_norm = normalize_coords(best_coords)
@@ -128,8 +131,11 @@ if __name__ == "__main__":
         real_coords
     )
 
+    fold_rmsd = rmsd(best_coords_aligned, real_coords)
+
     print("Optimal Bitstring:", best_bitstring)
     print("Lowest Energy:", min_energy)
+    print(f"RMSD vs real structure ({pdb_id}): {fold_rmsd:.4f}")
     print("3D Coordinates:")
 
     for i, (res, coord) in enumerate(
@@ -140,13 +146,26 @@ if __name__ == "__main__":
     plot_protein(
         best_coords_aligned,
         sequence,
+        title=f"VQE Fold for '{sequence}' (RMSD to {pdb_id}: {fold_rmsd:.3f})",
         min_energy=min_energy
     )
 
     plot_real_structure(
         real_coords,
         sequence,
-        pdb_id="2KS9"
+        pdb_id=pdb_id
     )
 
-    plt.show()
+    results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+    os.makedirs(results_dir, exist_ok=True)
+    fold_path = os.path.join(results_dir, f"{sequence}_vqe_fold.png")
+    real_path = os.path.join(results_dir, f"{sequence}_real_{pdb_id}.png")
+    plt.figure(1)
+    plt.savefig(fold_path, dpi=150, bbox_inches="tight")
+    plt.figure(2)
+    plt.savefig(real_path, dpi=150, bbox_inches="tight")
+    print(f"Plots saved to: {fold_path}")
+    print(f"                {real_path}")
+
+    if os.environ.get("SHOW_PLOTS", "1") != "0":
+        plt.show()

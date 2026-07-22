@@ -41,15 +41,14 @@ def kabsch_align(coords_to_rotate, reference_coords):
     rotated = (R @ A.T).T
     return [tuple(p) for p in rotated]
 
-from Bio.PDB import PDBParser
-parser = PDBParser(QUIET=True)
-structure = parser.get_structure("protein", "7OFG.pdb")
-for model in structure:
-    for chain in model:
-        print(chain.id, len(chain))
-    break
 
-from real_structure import get_ca_coords
+def rmsd(coords_a, coords_b):
+    """Root-mean-square deviation between two equal-length coordinate sets.
 
-coords = get_ca_coords("7OFG.pdb", chain_id="A")
-print(len(coords))
+    Assumes the coordinates are already superimposed (e.g. via ``kabsch_align``).
+    """
+    A = np.array(coords_a)
+    B = np.array(coords_b)
+    if A.shape != B.shape:
+        raise ValueError(f"coordinate sets differ in shape: {A.shape} vs {B.shape}")
+    return float(np.sqrt(np.mean(np.sum((A - B) ** 2, axis=1))))
