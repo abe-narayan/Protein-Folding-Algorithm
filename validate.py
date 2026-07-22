@@ -156,7 +156,15 @@ def main():
 
     plot_protein(vqe_coords, SEQUENCE, title=f"VQE Ground State Fold for '{SEQUENCE}'",
         min_energy=vqe_energy)
-    plt.show()
+
+    plot_path = os.path.join(
+        os.path.dirname(CSV_OUTPUT), f"{SEQUENCE}_validation_fold.png"
+    )
+    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved to: {plot_path}")
+
+    if os.environ.get("SHOW_PLOTS", "1") != "0":
+        plt.show()
 
 if __name__ == "__main__":
     main()
