@@ -3,6 +3,7 @@ from vqe import get_best_structure, run_vqe
 from hamiltonian import ONE_LETTER_TO_FULL
 from real_structure import get_ca_coords, normalize_coords, kabsch_align
 
+<<<<<<< HEAD
 sequence = "RPKPQQFFGLM"
 
 result, history = run_vqe(
@@ -28,6 +29,9 @@ for i, (res, coord) in enumerate(zip(sequence, best_coords)):
 
 
 def plot_protein(coords, sequence):
+=======
+def plot_protein(coords, sequence, min_energy=None):
+>>>>>>> 4de282e61acd1776128fde322c54588288f34210
     fig = plt.figure(figsize=(8, 6))
     ax = fig.add_subplot(111, projection="3d")
 
@@ -53,15 +57,21 @@ def plot_protein(coords, sequence):
         ax.scatter(x, y, z, color=c, s=120)
         full_name = ONE_LETTER_TO_FULL.get(res_type, res_type)
         ax.text(x, y, z + 0.2, f"{i+1}:{full_name}", fontsize=9)
+    title = f"3D Structure for '{sequence}'"
+    if min_energy is not None:
+        title += f" (Energy: {min_energy})"
 
-    ax.set_title(f"3D Structure for '{sequence}' (Energy: {min_energy})")
+    ax.set_title(title)
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
     ax.view_init(elev=20, azim=45)
     plt.tight_layout()
 
+if __name__ == "__main__":
+    sequence = "RPPGFSPFR"
 
+<<<<<<< HEAD
 def plot_real_structure(real_coords, sequence, pdb_id="6F3V"):
     fig = plt.figure(figsize=(8, 6))
     ax = fig.add_subplot(111, projection="3d")
@@ -100,3 +110,21 @@ def plot_real_structure(real_coords, sequence, pdb_id="6F3V"):
 plot_protein(best_coords_aligned, sequence)
 plot_real_structure(real_coords, sequence)
 plt.show()
+=======
+    result, history = run_vqe(
+        sequence=sequence, alpha=0.5, repetitions=2500, optimization_steps=200
+    )
+
+    best_bitstring, best_coords, min_energy = get_best_structure(
+        result, sequence, repetitions=1000
+    )
+
+    print("Optimal Bitstring:", best_bitstring)
+    print("Lowest Energy:", min_energy)
+    print("3D Coordinates:")
+
+    for i, (res, coord) in enumerate(zip(sequence, best_coords)):
+        print(f"Residue {i+1} ({res}): {coord}")
+
+    plot_protein(best_coords, sequence, min_energy)
+>>>>>>> 4de282e61acd1776128fde322c54588288f34210

@@ -79,7 +79,7 @@ def get_interaction(aa1: str, aa2: str) -> float:
     return MJ_MATRIX[(a1, a2)]
 
 
-def path_energy(
+def path_energy_specific(
     bitstring,
     sequence,
     overlap_penalty=None,
@@ -116,10 +116,22 @@ def path_energy(
         cx = sum(c[0] for c in coords) / n_residues
         cy = sum(c[1] for c in coords) / n_residues
         cz = sum(c[2] for c in coords) / n_residues
+
         rg_squared = sum(
-            (c[0] - cx) ** 2 + (c[1] - cy) ** 2 + (c[2] - cz) ** 2
+            (c[0] - cx) ** 2
+            + (c[1] - cy) ** 2
+            + (c[2] - cz) ** 2
             for c in coords
         ) / n_residues
+
         energy += compactness_weight * rg_squared
 
     return energy
+
+
+def path_energy(bitstring, sequence, overlap_penalty=30.0):
+    return path_energy_specific(
+        bitstring,
+        sequence,
+        overlap_penalty=overlap_penalty
+    )
