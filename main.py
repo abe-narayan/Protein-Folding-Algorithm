@@ -3,7 +3,7 @@ import os
 import matplotlib.pyplot as plt
 
 from vqe import get_best_structure, run_vqe
-from hamiltonian import ONE_LETTER_TO_FULL
+from hamiltonian import ONE_LETTER_TO_FULL, find_disulfide_pairs
 from real_structure import get_ca_coords, normalize_coords, kabsch_align, rmsd
 
 
@@ -43,7 +43,10 @@ def plot_protein(coords, sequence, title = None, min_energy=None):
     if title is None:
         title = f"3D Structure for '{sequence}'"
     if min_energy is not None:
-        title += f" (Energy: {min_energy})"
+        # This is a relative Miyazawa-Jernigan lattice contact score, not a
+        # physical free energy in kcal/mol -- label it as such so it is not read
+        # as comparable to an experimental value.
+        title += f" (Relative energy: {min_energy:.2f} MJ units)"
 
     ax.set_title(title, pad = 20, fontsize = 12, fontweight = "bold")
     ax.set_xlabel("X")
@@ -107,6 +110,15 @@ if __name__ == "__main__":
 
     sequence = "CYIQNCPLG"
     pdb_id = "7OFG"
+
+    # Oxytocin is a cyclic peptide: its Cys1-Cys6 disulfide bond is the dominant
+    # structural constraint and is present in the 7OFG reference (see its header,
+    # "CYS-CYS DISULFIDE BOND"). path_energy applies this restraint by default
+    # (inferred via find_disulfide_pairs), so the fold below is scored against
+    # the realistic constrained model rather than a free, non-native chain.
+    disulfides = find_disulfide_pairs(sequence)
+    print(f"Disulfide restraint(s) applied: {disulfides or 'none'}")
+
     result, history = run_vqe(
         sequence=sequence,
         alpha=0.5,

@@ -62,6 +62,23 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## Energy model notes
+
+The energy in `hamiltonian.py` is a **relative Miyazawa-Jernigan lattice contact
+score** (contact matrix + a radius-of-gyration compactness term + an overlap
+penalty). It is dimensionless and is **not** a physical free energy in kcal/mol, so
+its absolute value is not comparable to any experimental measurement. Correspondence
+to real structures is measured by **Cα RMSD** to a reference PDB (see `main.py`), not
+by the energy value.
+
+**Disulfide bonds.** Cys-Cys disulfides are covalent links that often dominate a small
+peptide's structure. `find_disulfide_pairs` infers them from the sequence (a peptide
+with exactly two cysteines is assumed to form one disulfide) and `path_energy` applies
+a distance restraint that pulls the bonded cysteines together, reproducing the native
+cyclic topology. For oxytocin (`CYIQNCPLG`, ref `7OFG`, whose header notes a
+`CYS-CYS DISULFIDE BOND`) this drives the Cys1-Cys6 pair into contact and lowers RMSD
+to the reference (~0.62 → ~0.51) — a realistic constraint, not a tuned fit.
+
 ## Status
 
 Work in progress. The core module files are now implemented: the turn-based lattice

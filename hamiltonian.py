@@ -79,12 +79,34 @@ def get_interaction(aa1: str, aa2: str) -> float:
     return MJ_MATRIX[(a1, a2)]
 
 
+def find_disulfide_pairs(sequence):
+    """Infer disulfide-bonded cysteine pairs from a sequence.
+
+    Disulfide bonds are covalent Cys-Cys links that are often the dominant
+    structural constraint in a small peptide (they cyclize it). We can't read
+    the true bonding topology from sequence alone, so we use the common,
+    well-defined case: a peptide with exactly two cysteines is assumed to form
+    a single disulfide between them. Oxytocin ("CYIQNCPLG") is exactly this --
+    Cys1-Cys6 -- and 7OFG's header confirms the "CYS-CYS DISULFIDE BOND".
+
+    Returns a list of (i, j) index pairs, or an empty list when the topology is
+    ambiguous (zero, one, or three+ cysteines), in which case no constraint is
+    applied rather than guessing.
+    """
+    cys_positions = [i for i, aa in enumerate(sequence) if aa.strip().upper() in ("C", "CYSTEINE")]
+    if len(cys_positions) == 2:
+        return [(cys_positions[0], cys_positions[1])]
+    return []
+
+
 def path_energy_specific(
     bitstring,
     sequence,
     overlap_penalty=None,
     contact_weight=1.0,
     compactness_weight=0.5,
+    disulfide_pairs=None,
+    disulfide_weight=0.5,
 ):
     coords = bits_to_coords(bitstring)
     n_residues = len(sequence)
@@ -112,6 +134,19 @@ def path_energy_specific(
                     sequence[j]
                 )
 
+    # Disulfide bonds are covalent Cys-Cys links (~2 A S-S) that pull the two
+    # residues together and cyclize the peptide. On this coarse lattice we model
+    # each bond as a harmonic-style distance restraint: a penalty proportional to
+    # the squared Cys-Cys separation, which drives the two cysteines into contact
+    # (the native cyclic topology) instead of letting them drift apart. Once in
+    # contact they also receive the normal favorable Cys-Cys MJ contact energy.
+    if disulfide_pairs:
+        for i, j in disulfide_pairs:
+            dx = coords[i][0] - coords[j][0]
+            dy = coords[i][1] - coords[j][1]
+            dz = coords[i][2] - coords[j][2]
+            energy += disulfide_weight * (dx * dx + dy * dy + dz * dz)
+
     if compactness_weight:
         cx = sum(c[0] for c in coords) / n_residues
         cy = sum(c[1] for c in coords) / n_residues
@@ -129,9 +164,17 @@ def path_energy_specific(
     return energy
 
 
-def path_energy(bitstring, sequence, overlap_penalty=30.0):
+def path_energy(bitstring, sequence, overlap_penalty=30.0, use_disulfide=True,
+                disulfide_weight=0.5):
+    # Disulfide restraints are inferred from the sequence (see
+    # find_disulfide_pairs) and applied by default so the whole pipeline --
+    # brute force, VQE, validation -- folds the same realistic model. Set
+    # use_disulfide=False to reproduce the unconstrained "before" baseline.
+    disulfide_pairs = find_disulfide_pairs(sequence) if use_disulfide else None
     return path_energy_specific(
         bitstring,
         sequence,
-        overlap_penalty=overlap_penalty
+        overlap_penalty=overlap_penalty,
+        disulfide_pairs=disulfide_pairs,
+        disulfide_weight=disulfide_weight,
     )
