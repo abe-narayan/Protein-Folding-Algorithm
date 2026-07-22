@@ -5,7 +5,7 @@ from hamiltonian import path_energy
 
 def build_cost_function(
     sequence,
-    overlap_penalty=10.0
+    overlap_penalty=30.0
 ):
 
     def cost_function(bitstring):
