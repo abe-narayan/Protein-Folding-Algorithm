@@ -1,5 +1,9 @@
 import numpy as np
+import random
+import math
+
 from Bio.PDB import PDBParser
+from encoding import bits_to_coords
 
 
 def get_ca_coords(pdb_path, chain_id=None):
@@ -52,3 +56,202 @@ def rmsd(coords_a, coords_b):
     if A.shape != B.shape:
         raise ValueError(f"coordinate sets differ in shape: {A.shape} vs {B.shape}")
     return float(np.sqrt(np.mean(np.sum((A - B) ** 2, axis=1))))
+
+def fit_lattice_to_real(
+    lattice_coords,
+    real_coords,
+    overlap_penalty=30.0
+):
+
+    lattice = np.array(
+        lattice_coords,
+        dtype=np.float64
+    )
+
+    real = np.array(
+        real_coords,
+        dtype=np.float64
+    )
+
+    overlaps = 0
+
+    for i in range(len(lattice)):
+
+        for j in range(i + 1, len(lattice)):
+
+            if np.array_equal(
+                lattice[i],
+                lattice[j]
+            ):
+
+                overlaps += 1
+
+    lattice_centered = (
+        lattice - lattice.mean(axis=0)
+    )
+
+    real_centered = (
+        real - real.mean(axis=0)
+    )
+
+    real_bond_lengths = np.linalg.norm(
+        np.diff(real, axis=0),
+        axis=1
+    )
+
+    average_real_bond_length = np.mean(
+        real_bond_lengths
+    )
+
+    lattice_bond_length = np.linalg.norm(
+        lattice[1] - lattice[0]
+    )
+
+    scale = (
+        average_real_bond_length
+        / lattice_bond_length
+    )
+
+    lattice_scaled = (
+        lattice_centered * scale
+    )
+
+    H = lattice_scaled.T @ real_centered
+
+    U, S, Vt = np.linalg.svd(H)
+
+    d = np.sign(
+        np.linalg.det(
+            Vt.T @ U.T
+        )
+    )
+
+    D = np.diag(
+        [1, 1, d]
+    )
+
+    R = Vt.T @ D @ U.T
+
+    aligned = (
+        R @ lattice_scaled.T
+    ).T
+
+    geometric_rmsd = np.sqrt(
+        np.mean(
+            np.sum(
+                (aligned - real_centered) ** 2,
+                axis=1
+            )
+        )
+    )
+
+    total_score = (
+        geometric_rmsd
+        + overlap_penalty * overlaps
+    )
+
+    return aligned, total_score
+
+def real_structure_to_bitstring(
+    coords,
+    iterations=50000,
+    temperature=1.0,
+    cooling_rate=0.9998,
+    seed=42
+):
+
+    random.seed(seed)
+
+    coords = np.array(coords, dtype=np.float64)
+
+    n_bonds = len(coords) - 1
+
+    current_bits = [
+        random.randint(0, 3)
+        for _ in range(n_bonds)
+    ]
+
+    def bits_to_bitstring(bits):
+
+        return "".join(
+            format(direction, "02b")
+            for direction in bits
+        )
+
+    current_bitstring = bits_to_bitstring(
+        current_bits
+    )
+
+    current_coords = bits_to_coords(
+        current_bitstring
+    )
+
+    _, current_rmsd = fit_lattice_to_real(
+        current_coords,
+        coords
+    )
+
+    best_bits = current_bits.copy()
+    best_rmsd = current_rmsd
+
+    current_temperature = temperature
+
+    for iteration in range(iterations):
+
+        new_bits = current_bits.copy()
+
+        bond_index = random.randrange(
+            n_bonds
+        )
+
+        new_direction = random.randint(0, 3)
+
+        new_bits[bond_index] = new_direction
+
+        new_bitstring = bits_to_bitstring(
+            new_bits
+        )
+
+        new_coords = bits_to_coords(
+            new_bitstring
+        )
+
+        _, new_rmsd = fit_lattice_to_real(
+            new_coords,
+            coords
+        )
+
+        difference = new_rmsd - current_rmsd
+
+        if (
+            difference < 0
+            or random.random()
+            < math.exp(
+                -difference / current_temperature
+            )
+        ):
+
+            current_bits = new_bits
+            current_rmsd = new_rmsd
+
+        if current_rmsd < best_rmsd:
+
+            best_bits = current_bits.copy()
+            best_rmsd = current_rmsd
+
+        current_temperature *= cooling_rate
+
+        if current_temperature < 0.0001:
+
+            current_temperature = 0.0001
+
+    best_bitstring = bits_to_bitstring(
+        best_bits
+    )
+
+    print(
+        f"Closest tetrahedral lattice RMSD: "
+        f"{best_rmsd:.4f}"
+    )
+
+    return best_bitstring

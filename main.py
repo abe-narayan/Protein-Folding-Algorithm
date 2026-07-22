@@ -3,8 +3,14 @@ import os
 import matplotlib.pyplot as plt
 
 from vqe import get_best_structure, run_vqe
-from hamiltonian import ONE_LETTER_TO_FULL, path_energy, real_structure_to_bitstring
-from real_structure import get_ca_coords, normalize_coords, kabsch_align, rmsd
+from hamiltonian import ONE_LETTER_TO_FULL, path_energy
+from real_structure import (
+    get_ca_coords,
+    normalize_coords,
+    kabsch_align,
+    rmsd,
+    real_structure_to_bitstring
+)
 
 
 def plot_protein(coords, sequence, title = None, min_energy=None):
