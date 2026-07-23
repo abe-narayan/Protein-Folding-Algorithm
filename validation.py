@@ -12,6 +12,7 @@ import numpy as np
 
 import protein_geometry as geo
 import representations as reps
+import sidechains as sc
 import energy_terms as et
 import hamiltonian as ham
 import vqe as vqe_mod
@@ -410,6 +411,223 @@ def test_representation_ceiling_computable() -> bool:
 
 
 # ==========================================================================
+
+
+# ==========================================================================
+# Sidechain construction (sidechains.py)
+# ==========================================================================
+_SC_PROBE_SEQ = "GASTDENKPYW"
+
+
+def _sc_backbones():
+    """One 11-residue backbone per torsion state, covering all built types."""
+    r = reps.TorsionStateRepresentation(len(_SC_PROBE_SEQ), n_states=4)
+    return [r.build_coords(r.bitstring_from_states([s] * len(_SC_PROBE_SEQ)))
+            for s in range(4)]
+
+
+def _sc_residue_atoms(key, bb, i):
+    res = {"N": bb["N"][i], "CA": bb["CA"][i], "C": bb["C"][i], "O": bb["O"][i]}
+    res.update(sc.build_sidechain(key, bb["N"][i], bb["CA"][i], bb["C"][i],
+                                  bb["CB"][i]))
+    return res
+
+
+def _sc_bond_distances(key):
+    """Bond-graph hop counts between every pair of heavy atoms in a residue."""
+    adj = {}
+    for a, b in sc.residue_bonds(key):
+        adj.setdefault(a, set()).add(b)
+        adj.setdefault(b, set()).add(a)
+    out = {}
+    for src in adj:
+        d, queue = {src: 0}, [src]
+        while queue:
+            u = queue.pop(0)
+            for v in adj.get(u, ()):
+                if v not in d:
+                    d[v] = d[u] + 1
+                    queue.append(v)
+        out[src] = d
+    return out
+
+
+# Ideal bond lengths, written out independently of sidechains.py internals so
+# this is a real check rather than a tautology. CA-CB is fixed by place_cb.
+_SC_IDEAL_BONDS = {
+    "ALA": {("CA", "CB"): 1.5295},
+    "SER": {("CA", "CB"): 1.5295, ("CB", "OG"): 1.417},
+    "THR": {("CA", "CB"): 1.5295, ("CB", "OG1"): 1.420, ("CB", "CG2"): 1.530},
+    "ASP": {("CA", "CB"): 1.5295, ("CB", "CG"): 1.522, ("CG", "OD1"): 1.250,
+            ("CG", "OD2"): 1.250},
+    "ASN": {("CA", "CB"): 1.5295, ("CB", "CG"): 1.521, ("CG", "OD1"): 1.231,
+            ("CG", "ND2"): 1.328},
+    "GLU": {("CA", "CB"): 1.5295, ("CB", "CG"): 1.529, ("CG", "CD"): 1.523,
+            ("CD", "OE1"): 1.250, ("CD", "OE2"): 1.250},
+    "LYS": {("CA", "CB"): 1.5295, ("CB", "CG"): 1.531, ("CG", "CD"): 1.531,
+            ("CD", "CE"): 1.531, ("CE", "NZ"): 1.486},
+    "PRO": {("CA", "CB"): 1.5295, ("CB", "CG"): 1.526, ("CG", "CD"): 1.526,
+            ("CD", "N"): 1.458},
+    "TYR": {("CA", "CB"): 1.5295, ("CB", "CG"): 1.512, ("CG", "CD1"): 1.389,
+            ("CG", "CD2"): 1.389, ("CD1", "CE1"): 1.382, ("CD2", "CE2"): 1.382,
+            ("CE1", "CZ"): 1.378, ("CE2", "CZ"): 1.378, ("CZ", "OH"): 1.376},
+    "TRP": {("CA", "CB"): 1.5295, ("CB", "CG"): 1.498, ("CG", "CD1"): 1.365,
+            ("CG", "CD2"): 1.433, ("CD1", "NE1"): 1.375, ("NE1", "CE2"): 1.371,
+            ("CE2", "CD2"): 1.409, ("CD2", "CE3"): 1.398, ("CE3", "CZ3"): 1.382,
+            ("CZ3", "CH2"): 1.400, ("CH2", "CZ2"): 1.368, ("CZ2", "CE2"): 1.394},
+}
+
+
+def test_sidechain_bond_lengths() -> bool:
+    """Every built sidechain must reproduce ideal bond lengths.
+
+    Checked across four backbone conformations, because a NeRF bug that
+    depends on the local frame would otherwise hide in a single geometry.
+    """
+    worst, worst_at = 0.0, ""
+    for bb in _sc_backbones():
+        for i, aa in enumerate(_SC_PROBE_SEQ):
+            key = geo.ONE_TO_THREE[aa]
+            if key == "GLY":
+                continue
+            atoms = _sc_residue_atoms(key, bb, i)
+            for (a, b), target in _SC_IDEAL_BONDS[key].items():
+                err = abs(float(np.linalg.norm(atoms[a] - atoms[b])) - target)
+                if err > worst:
+                    worst, worst_at = err, f"{key} {a}-{b}"
+    ok = worst < 0.02
+    return _report("sidechain bond lengths within 0.02 A of ideal", ok,
+                   f"worst {worst:.5f} A on {worst_at}")
+
+
+def test_sidechain_rings_planar() -> bool:
+    """Tyr and Trp ring systems must be planar."""
+    rings = {"TYR": ["CG", "CD1", "CD2", "CE1", "CE2", "CZ", "OH"],
+             "TRP": ["CG", "CD1", "CD2", "NE1", "CE2", "CE3", "CZ2", "CZ3",
+                     "CH2"]}
+    worst, worst_at = 0.0, ""
+    for bb in _sc_backbones():
+        for key, names in rings.items():
+            i = _SC_PROBE_SEQ.index(geo.THREE_TO_ONE[key])
+            atoms = _sc_residue_atoms(key, bb, i)
+            P = np.array([atoms[n] for n in names])
+            P = P - P.mean(axis=0)
+            _, _, vt = np.linalg.svd(P)
+            rms = float(np.sqrt(np.mean((P @ vt[2]) ** 2)))
+            if rms > worst:
+                worst, worst_at = rms, key
+    ok = worst < 1e-6
+    return _report("aromatic rings planar (Tyr, Trp)", ok,
+                   f"worst RMS deviation {worst:.2e} A on {worst_at}")
+
+
+def test_sidechain_no_internal_clashes() -> bool:
+    """No two heavy atoms >=4 bonds apart may sit closer than 2.5 A.
+
+    1-2, 1-3 and 1-4 pairs are excluded: those distances are fixed by bond
+    lengths and angles, and inside a ring a 1-4 pair is legitimately ~2.2 A.
+    """
+    worst, worst_at = 1e9, ""
+    for bb in _sc_backbones():
+        for i, aa in enumerate(_SC_PROBE_SEQ):
+            key = geo.ONE_TO_THREE[aa]
+            atoms = _sc_residue_atoms(key, bb, i)
+            hops = _sc_bond_distances(key)
+            names = sorted(atoms)
+            for x in range(len(names)):
+                for y in range(x + 1, len(names)):
+                    a, b = names[x], names[y]
+                    if hops.get(a, {}).get(b, 99) < 4:
+                        continue
+                    d = float(np.linalg.norm(atoms[a] - atoms[b]))
+                    if d < worst:
+                        worst, worst_at = d, f"{key} {a}-{b}"
+    ok = worst > 2.5
+    return _report("no intra-residue clashes (>=1-5 pairs beyond 2.5 A)", ok,
+                   f"closest {worst:.3f} A on {worst_at}")
+
+
+def test_sidechain_chirality() -> bool:
+    """Building on a mirrored backbone must NOT give the mirrored sidechain.
+
+    Reflect the backbone, rebuild, reflect the result back. An achiral
+    construction returns the original; a correctly chiral one cannot, because
+    the fixed chi angles keep their sign in the mirrored frame. Ala and Gly
+    are excluded: Gly has no sidechain and Ala's only sidechain atom is CB,
+    which is an input here (its chirality belongs to place_cb and is already
+    covered by test_chirality).
+    """
+    M = np.diag([-1.0, 1.0, 1.0])
+    bb = _sc_backbones()[1]
+    smallest, smallest_at = 1e9, ""
+    for i, aa in enumerate(_SC_PROBE_SEQ):
+        key = geo.ONE_TO_THREE[aa]
+        if key in ("GLY", "ALA"):
+            continue
+        direct = sc.build_sidechain(key, bb["N"][i], bb["CA"][i], bb["C"][i],
+                                    bb["CB"][i])
+        mirrored = sc.build_sidechain(key, bb["N"][i] @ M, bb["CA"][i] @ M,
+                                      bb["C"][i] @ M, bb["CB"][i] @ M)
+        dev = max(float(np.linalg.norm(direct[k] - mirrored[k] @ M))
+                  for k in direct)
+        if dev < smallest:
+            smallest, smallest_at = dev, key
+    ok = smallest > 0.1
+    return _report("sidechains are chiral (L-amino-acid stereochemistry)", ok,
+                   f"smallest mirror deviation {smallest:.3f} A on "
+                   f"{smallest_at}")
+
+
+def test_sidechain_rejects_unimplemented_residue() -> bool:
+    """Unsupported residues must raise NotImplementedError naming the residue.
+
+    A silent stub would corrupt the Amber energy without ever failing.
+    """
+    probe = ([0.0, 0.0, 0.0], [1.458, 0.0, 0.0], [2.0, 1.42, 0.0],
+             [1.99, -0.77, -1.21])
+    ok = True
+    detail = []
+    for one, three in (("F", "PHE"), ("C", "CYS"), ("H", "HIS"),
+                       ("M", "MET"), ("V", "VAL")):
+        for name in (one, three):
+            try:
+                sc.build_sidechain(name, *probe)
+                ok = False
+                detail.append(f"{name} did not raise")
+            except NotImplementedError as exc:
+                if three not in str(exc):
+                    ok = False
+                    detail.append(f"{name} message lacks {three}")
+    return _report("unimplemented residues raise NotImplementedError", ok,
+                   "; ".join(detail) if detail else
+                   "F, C, H, M, V rejected by both 1- and 3-letter code")
+
+
+def test_sidechain_atom_counts() -> bool:
+    """Heavy-atom counts must match the PDB standard for each residue type."""
+    expected = {"GLY": 4, "ALA": 5, "SER": 6, "THR": 7, "PRO": 7, "ASP": 8,
+                "ASN": 8, "GLU": 9, "LYS": 9, "TYR": 12, "TRP": 14}
+    ok = True
+    bad = []
+    for key, n in expected.items():
+        if sc.heavy_atom_count(key) != n:
+            ok = False
+            bad.append(f"{key} {sc.heavy_atom_count(key)}!={n}")
+    # and end to end, where the C-terminal residue also carries OXT
+    bb = _sc_backbones()[1]
+    full = sc.build_full_structure(_SC_PROBE_SEQ, bb)
+    total = sum(expected[geo.ONE_TO_THREE[a]] for a in _SC_PROBE_SEQ) + 1
+    if full["n_atoms"] != total:
+        ok = False
+        bad.append(f"total {full['n_atoms']}!={total}")
+    return _report("sidechain atom counts match PDB standard", ok,
+                   "; ".join(bad) if bad else
+                   f"{full['n_atoms']} heavy atoms over {len(_SC_PROBE_SEQ)} "
+                   f"residues (incl. OXT)")
+
+
+
+
 def run_all() -> bool:
     print("=" * 72)
     print("VALIDATION SUITE")
@@ -439,7 +657,14 @@ def run_all() -> bool:
         test_vqe_matches_exhaustive_on_tiny_system,
         test_ceiling_is_a_real_ceiling,
         test_representation_ceiling_computable,
+        test_sidechain_bond_lengths,
+        test_sidechain_rings_planar,
+        test_sidechain_no_internal_clashes,
+        test_sidechain_chirality,
+        test_sidechain_rejects_unimplemented_residue,
+        test_sidechain_atom_counts,
     ]
+
     results = []
     for t in tests:
         try:
