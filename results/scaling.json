@@ -1,0 +1,143 @@
+{
+  "table": [
+    {
+      "n_residues": 8,
+      "lattice_qubits": 14,
+      "torsion4_qubits": 16,
+      "torsion8_qubits": 24,
+      "torsion4_config_space": 65536.0,
+      "torsion4_statevector_bytes": 1048576,
+      "simulable_at_30_qubit_limit": true
+    },
+    {
+      "n_residues": 9,
+      "lattice_qubits": 16,
+      "torsion4_qubits": 18,
+      "torsion8_qubits": 27,
+      "torsion4_config_space": 262144.0,
+      "torsion4_statevector_bytes": 4194304,
+      "simulable_at_30_qubit_limit": true
+    },
+    {
+      "n_residues": 10,
+      "lattice_qubits": 18,
+      "torsion4_qubits": 20,
+      "torsion8_qubits": 30,
+      "torsion4_config_space": 1048576.0,
+      "torsion4_statevector_bytes": 16777216,
+      "simulable_at_30_qubit_limit": true
+    },
+    {
+      "n_residues": 11,
+      "lattice_qubits": 20,
+      "torsion4_qubits": 22,
+      "torsion8_qubits": 33,
+      "torsion4_config_space": 4194304.0,
+      "torsion4_statevector_bytes": 67108864,
+      "simulable_at_30_qubit_limit": true
+    },
+    {
+      "n_residues": 12,
+      "lattice_qubits": 22,
+      "torsion4_qubits": 24,
+      "torsion8_qubits": 36,
+      "torsion4_config_space": 16777216.0,
+      "torsion4_statevector_bytes": 268435456,
+      "simulable_at_30_qubit_limit": true
+    },
+    {
+      "n_residues": 13,
+      "lattice_qubits": 24,
+      "torsion4_qubits": 26,
+      "torsion8_qubits": 39,
+      "torsion4_config_space": 67108864.0,
+      "torsion4_statevector_bytes": 1073741824,
+      "simulable_at_30_qubit_limit": true
+    },
+    {
+      "n_residues": 14,
+      "lattice_qubits": 26,
+      "torsion4_qubits": 28,
+      "torsion8_qubits": 42,
+      "torsion4_config_space": 268435456.0,
+      "torsion4_statevector_bytes": 4294967296,
+      "simulable_at_30_qubit_limit": true
+    },
+    {
+      "n_residues": 15,
+      "lattice_qubits": 28,
+      "torsion4_qubits": 30,
+      "torsion8_qubits": 45,
+      "torsion4_config_space": 1073741824.0,
+      "torsion4_statevector_bytes": 17179869184,
+      "simulable_at_30_qubit_limit": true
+    },
+    {
+      "n_residues": 16,
+      "lattice_qubits": 30,
+      "torsion4_qubits": 32,
+      "torsion8_qubits": 48,
+      "torsion4_config_space": 4294967296.0,
+      "torsion4_statevector_bytes": 68719476736,
+      "simulable_at_30_qubit_limit": false
+    },
+    {
+      "n_residues": 17,
+      "lattice_qubits": 32,
+      "torsion4_qubits": 34,
+      "torsion8_qubits": 51,
+      "torsion4_config_space": 17179869184.0,
+      "torsion4_statevector_bytes": 274877906944,
+      "simulable_at_30_qubit_limit": false
+    },
+    {
+      "n_residues": 18,
+      "lattice_qubits": 34,
+      "torsion4_qubits": 36,
+      "torsion8_qubits": 54,
+      "torsion4_config_space": 68719476736.0,
+      "torsion4_statevector_bytes": 1099511627776,
+      "simulable_at_30_qubit_limit": false
+    },
+    {
+      "n_residues": 19,
+      "lattice_qubits": 36,
+      "torsion4_qubits": 38,
+      "torsion8_qubits": 57,
+      "torsion4_config_space": 274877906944.0,
+      "torsion4_statevector_bytes": 4398046511104,
+      "simulable_at_30_qubit_limit": false
+    },
+    {
+      "n_residues": 20,
+      "lattice_qubits": 38,
+      "torsion4_qubits": 40,
+      "torsion8_qubits": 60,
+      "torsion4_config_space": 1099511627776.0,
+      "torsion4_statevector_bytes": 17592186044416,
+      "simulable_at_30_qubit_limit": false
+    },
+    {
+      "n_residues": 21,
+      "lattice_qubits": 40,
+      "torsion4_qubits": 42,
+      "torsion8_qubits": 63,
+      "torsion4_config_space": 4398046511104.0,
+      "torsion4_statevector_bytes": 70368744177664,
+      "simulable_at_30_qubit_limit": false
+    },
+    {
+      "n_residues": 22,
+      "lattice_qubits": 42,
+      "torsion4_qubits": 44,
+      "torsion8_qubits": 66,
+      "torsion4_config_space": 17592186044416.0,
+      "torsion4_statevector_bytes": 281474976710656,
+      "simulable_at_30_qubit_limit": false
+    }
+  ],
+  "statevector_limit_qubits": 30,
+  "max_simulable_length_torsion4": 15,
+  "max_simulable_length_torsion8": 10,
+  "max_simulable_length_lattice": 16
+}
