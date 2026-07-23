@@ -4,3 +4,12 @@ pennylane>=0.35
 pennylane-lightning>=0.35
 biopython>=1.80
 matplotlib>=3.6
+
+# OPTIONAL — only for the `--prior esm` ablation. The default pipeline
+# does NOT use these and runs fully without them.
+# torch==2.2.2
+# fair-esm>=2.0.0
+
+# Amber energy model (OpenMM). Installed via pip on Windows:
+#   pip install openmm
+openmm>=8.0
