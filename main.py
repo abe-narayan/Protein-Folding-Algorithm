@@ -1,5 +1,5 @@
+import csv
 import os
-
 import matplotlib.pyplot as plt
 from encoding import bits_to_coords
 from vqe import get_best_structure, run_vqe
@@ -11,6 +11,64 @@ from real_structure import (
     rmsd,
     real_structure_to_bitstring
 )
+
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RESULTS_DIR = os.path.join(BASE_DIR, "results")
+CSV_OUTPUT = os.path.join(RESULTS_DIR, "main_results.csv")
+
+SEQUENCE = "GYDPETGTWG"
+PDB_ID = "1UAO"
+CHAIN_ID = "A"
+SEED = 42
+ALPHA = 0.5
+REPETITIONS = 5000
+OPTIMIZATION_STEPS = 200
+LAYERS = 4
+RESTARTS = 6
+FINAL_REPETITIONS = 1000
+
+CSV_FIELDS = (
+    "Sequence",
+    "Residues",
+    "Qubits",
+    "Seed",
+    "Alpha",
+    "Reps",
+    "Opt Steps",
+    "Evals",
+    "Real Energy",
+    "Real Bitstring",
+    "VQE Energy",
+    "VQE Bitstring",
+    "Energy Diff",
+    "RMSD",
+)
+
+
+def save_main_result(filename, result_row):
+    """Append one completed main-program run to a consistently shaped CSV."""
+
+    output_parent = os.path.dirname(filename)
+    if output_parent:
+        os.makedirs(output_parent, exist_ok=True)
+
+    write_header = not os.path.exists(filename) or os.path.getsize(filename) == 0
+
+    if not write_header:
+        with open(filename, "r", encoding="utf-8", newline="") as csv_file:
+            existing_header = next(csv.reader(csv_file), [])
+        if existing_header != list(CSV_FIELDS):
+            raise ValueError(
+                f"Existing CSV header in {filename!r} does not match the "
+                "current main.py result schema."
+            )
+
+    with open(filename, "a", encoding="utf-8", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=CSV_FIELDS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(result_row)
 
 
 def plot_protein(coords, sequence, title = None, min_energy=None):
@@ -111,106 +169,61 @@ def plot_real_structure(real_coords, sequence, pdb_id="7OFG"):
 
 if __name__ == "__main__":
 
-    sequence = "GYDPETGTWG"
-    pdb_id = "1UAO"
+    sequence = SEQUENCE
+    pdb_id = PDB_ID
+    n_qubits = 2 * (len(sequence) - 1)
+
     result, history = run_vqe(
         sequence=sequence,
-        alpha=0.5,
-        repetitions=5000,
-        optimization_steps=200
+        alpha=ALPHA,
+        repetitions=REPETITIONS,
+        optimization_steps=OPTIMIZATION_STEPS,
+        seed=SEED,
+        layers=LAYERS,
+        restarts=RESTARTS,
     )
 
     best_bitstring, best_coords, min_energy = get_best_structure(
         result,
         sequence,
-        repetitions=1000
+        repetitions=FINAL_REPETITIONS,
+        seed=SEED,
+        layers=LAYERS,
     )
 
-    real_coords_raw = get_ca_coords(
-    "pdbs/1UAO.pdb",
-    chain_id="A"
-    )
+    pdb_path = os.path.join(BASE_DIR, "pdbs", f"{pdb_id}.pdb")
+    real_coords_raw = get_ca_coords(pdb_path, chain_id=CHAIN_ID)
+    real_bitstring = real_structure_to_bitstring(real_coords_raw)
+    real_fitted_coords = bits_to_coords(real_bitstring)
+    real_energy = path_energy(real_bitstring, sequence)
 
-
-    real_bitstring = real_structure_to_bitstring(
-        real_coords_raw
-    )
-
-    real_fitted_coords = bits_to_coords(
-        real_bitstring
-    )
-
-    real_energy = path_energy(
-        real_bitstring,
-        sequence
-    )
-
+    #Output stuff
     print()
     print("========== REAL STRUCTURE FITTED TO LATTICE ==========")
-
-    print(
-        "Fitted real structure bitstring:",
-        real_bitstring
-    )
-
-    print(
-        "Fitted real structure energy:",
-        real_energy
-    )
-
-    print(
-        "Fitted real structure coordinates:"
-    )
+    print("Fitted real structure bitstring:", real_bitstring)
+    print("Fitted real structure energy:", real_energy)
+    print("Fitted real structure coordinates:")
 
     for i, (res, coord) in enumerate(
-        zip(sequence, real_fitted_coords)
-    ):
-
-        print(
-            f"Residue {i + 1} ({res}): {coord}"
-        )
+        zip(sequence, real_fitted_coords)):
+        print(f"Residue {i + 1} ({res}): {coord}")
 
     print()
     print("=======================================================")
 
-    real_coords = normalize_coords(
-        real_coords_raw
-    )
+    real_coords = normalize_coords(real_coords_raw)
+    best_coords_norm = normalize_coords(best_coords)
+    best_coords_aligned = kabsch_align(best_coords_norm, real_coords)
+    fold_rmsd = rmsd(best_coords_aligned, real_coords)
 
-    best_coords_norm = normalize_coords(
-        best_coords
-    )
-
-    best_coords_aligned = kabsch_align(
-        best_coords_norm,
-        real_coords
-    )
-
-    fold_rmsd = rmsd(
-        best_coords_aligned,
-        real_coords
-    )
     print()
     print("============== ENERGY COMPARISON ==============")
 
-    print(
-    f"VQE optimized structure energy: "
-    f"{min_energy:.6f}"
-    )
+    print(f"VQE optimized structure energy: "f"{min_energy:.6f}")
+    print(f"Fitted real structure energy: "f"{real_energy:.6f}")
+    print(f"Energy difference: "f"{min_energy - real_energy:.6f}")
 
-    print(
-        f"Fitted real structure energy: "
-        f"{real_energy:.6f}"
-    )
-
-    print(
-        f"Energy difference: "
-        f"{min_energy - real_energy:.6f}"
-    )
-
-    print(
-        "==============================================="
-    )
+    print("===============================================")
 
     print("Optimal Bitstring:", best_bitstring)
     print("Lowest Energy:", min_energy)
@@ -218,8 +231,7 @@ if __name__ == "__main__":
     print("3D Coordinates:")
 
     for i, (res, coord) in enumerate(
-        zip(sequence, best_coords)
-    ):
+        zip(sequence, best_coords)):
         print(f"Residue {i + 1} ({res}): {coord}")
 
     plot_protein(
@@ -235,16 +247,38 @@ if __name__ == "__main__":
         pdb_id=pdb_id
     )
 
-    results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
-    os.makedirs(results_dir, exist_ok=True)
-    fold_path = os.path.join(results_dir, f"{sequence}_vqe_fold.png")
-    real_path = os.path.join(results_dir, f"{sequence}_real_{pdb_id}.png")
+    # Model outputs
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    fold_path = os.path.join(RESULTS_DIR, f"{sequence}_vqe_fold.png")
+    real_path = os.path.join(RESULTS_DIR, f"{sequence}_real_{pdb_id}.png")
     plt.figure(1)
     plt.savefig(fold_path, dpi=150, bbox_inches="tight")
     plt.figure(2)
     plt.savefig(real_path, dpi=150, bbox_inches="tight")
     print(f"Plots saved to: {fold_path}")
     print(f"                {real_path}")
+
+    #CSV Stuff
+    save_main_result(
+        CSV_OUTPUT,
+        {
+            "Sequence": sequence,
+            "Residues": len(sequence),
+            "Qubits": n_qubits,
+            "Seed": SEED,
+            "Alpha": ALPHA,
+            "Reps": REPETITIONS,
+            "Opt Steps": OPTIMIZATION_STEPS,
+            "Evals": len(history),
+            "Real Energy": real_energy,
+            "Real Bitstring": real_bitstring,
+            "VQE Energy": min_energy,
+            "VQE Bitstring": best_bitstring,
+            "Energy Diff": min_energy - real_energy,
+            "RMSD": fold_rmsd,
+        },
+    )
+    print(f"Results saved to: {CSV_OUTPUT}")
 
     if os.environ.get("SHOW_PLOTS", "1") != "0":
         plt.show()
