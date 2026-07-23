@@ -1,10 +1,59 @@
 import numpy as np
 import random
 import math
+import os
 
-from Bio.PDB import PDBParser
+from Bio.PDB import PDBParser, PDBList
 from encoding import bits_to_coords
+from rcsbapi.search import SeqSimilarityQuery
 
+def search_pdb_by_sequence(sequence):
+    try:
+        query = SeqSimilarityQuery(
+            value=sequence,
+            sequence_type="protein",
+            evalue_cutoff=10.0,
+            identity_cutoff=0.8
+        )
+        results = list(query())
+        return results if results else []
+    except Exception as e:
+        print(f"RCSB Search API error: {e}")
+        return []
+
+def ensure_pdb_downloaded(pdb_id, pdb_dir):
+    os.makedirs(pdb_dir, exist_ok=True)
+    pdb_path = os.path.join(pdb_dir, f"{pdb_id.upper()}.pdb")
+    if os.path.exists(pdb_path):
+        return pdb_path
+    
+    pdbl = PDBList(quiet=True)
+    fetched_file = pdbl.retrieve_pdb_file(pdb_id, pdir=pdb_dir, file_format="pdb")
+    
+    if fetched_file and os.path.exists(fetched_file):
+        os.rename(fetched_file, pdb_path)
+        return pdb_path
+    return None
+
+def extract_clean_ca_coords(pdb_path, chain_id="A", expected_length=None):
+    parser = PDBParser(QUIET=True)
+    structure = parser.get_structure("protein", pdb_path)
+
+    model = structure[0]
+
+    if chain_id in model:
+        chain = model[chain_id]
+    else:
+        chain = next(iter(model.get_chains()))
+
+    ca_coords = []
+    for residue in chain:
+        if residue.id[0] == " " and "CA" in residue:
+            ca_coords.append(residue["CA"].get_coord())
+            if expected_length and len(ca_coords) == expected_length:
+                break
+
+    return np.array(ca_coords)
 
 def get_ca_coords(pdb_path, chain_id=None):
     parser = PDBParser(QUIET=True)

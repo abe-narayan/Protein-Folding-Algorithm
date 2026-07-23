@@ -5,3 +5,4 @@ pennylane
 networkx
 biopython
 jupyter
+rcsb-api
