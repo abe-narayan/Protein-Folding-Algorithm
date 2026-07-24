@@ -1,52 +1,4 @@
-"""Ideal-geometry heavy-atom sidechains.
 
-Builds all heavy sidechain atoms for a residue from its backbone N, CA, C, CB.
-Exists because `protein_geometry.build_backbone` emits only N, CA, C, O, CB,
-while Amber ff14SB requires a complete heavy-atom residue before a topology
-can be constructed.
-
-SCOPE: eleven residue types -- G A S T D E N K P Y W. These cover the two
-benchmark peptides completely (GYDPETGTWG, SWTWEGNKWTWK). Anything else
-raises NotImplementedError naming the residue; there is deliberately no stub
-fallback, because a silently-wrong sidechain would poison the energy without
-failing loudly.
-
-FIXED CHI IS A DELIBERATE LIMITATION. Sidechain torsions are pinned to
-canonical rotamer values and are NOT encoded in the qubit register. Making
-chi variable would cost roughly one extra 2-bit state per rotatable bond; for
-the 12-residue trpzip that is ~34 qubits, i.e. 2^34 complex amplitudes = 17 GB
-of statevector, which is not simulable. The register stays backbone-only
-(2 bits/residue); sidechains are rebuilt deterministically from the backbone
-at every energy evaluation. Downstream, the Day-2 restrained Amber
-minimization relaxes chi, so these values are a physically sensible STARTING
-point rather than a claim about the true rotamer.
-
-GEOMETRY SOURCES
-  * Bond lengths / angles: Engh & Huber (1991) restraint library, the same
-    source protein_geometry already uses for the backbone, cross-checked
-    against 170 residues in pdbs/. Per-line comments give the measured
-    mean +/- sd; every value used agrees to within 0.02 A / 2 deg unless
-    explicitly annotated otherwise.
-  * Chi angles: modal rotamers of the Lovell et al. (2000) "penultimate
-    rotamer library" (Proteins 40:389). See CHI_ANGLES for per-residue
-    caveats.
-
-CONSTRUCTION
-  * Acyclic atoms are placed with protein_geometry._place_atom (NeRF), the
-    same routine used for the backbone.
-  * Rigid planar ring systems (Tyr phenol, Trp indole) are placed from a
-    precomputed planar template. Chaining NeRF around a fused ring does not
-    close: for indole it left the CH2-CZ2 bond 0.061 A long and ring angles
-    up to 5.2 deg off. The template is fitted once so that every ring bond
-    and angle is satisfied simultaneously and planarity is exact.
-  * Proline ring closes back onto the backbone N. Its internal coordinates
-    are solved against the FIXED N-CA-CB geometry place_cb produces; see
-    PRO_RING for the residual strain.
-
-All coordinates are in ANGSTROMS. Atom names are PDB standard, because
-OpenMM matches ff14SB residue templates by atom name; a wrong name is a hard
-topology failure, not a small error.
-"""
 import math
 from typing import Dict, List, Sequence, Tuple
 
@@ -74,19 +26,15 @@ SUPPORTED_RESIDUES = ("GLY", "ALA", "SER", "THR", "ASP", "GLU",
 
 
 CHI_ANGLES: Dict[str, Tuple[float, ...]] = {
-    "SER": (62.0,),                       # p
-    "THR": (62.0,),                       # p  (chi1 measured on OG1)
-    "ASP": (-70.0, -15.0),                # m-20
-    "ASN": (-65.0, -20.0),                # m-20
-    "GLU": (-67.0, 180.0, -10.0),         # mt-10 (chi3 = carboxyl rotation)
-    "LYS": (-67.0, 180.0, 180.0, 180.0),  # mttt
-    "TYR": (-65.0, -85.0),                # m-85
-    "TRP": (-65.0, -90.0),                # m-90. Trp is the one residue whose
-                                          # modal rotamer I could not verify
-                                          # offline; m-90 and t-105 are both
-                                          # heavily populated and I picked the
-                                          # former. Treat as a start point.
-    "PRO": (),                            # ring-closure solved, see PRO_RING
+    "SER": (62.0,),                      
+    "THR": (62.0,),                     
+    "ASP": (-70.0, -15.0),               
+    "ASN": (-65.0, -20.0),               
+    "GLU": (-67.0, 180.0, -10.0),         
+    "LYS": (-67.0, 180.0, 180.0, 180.0), 
+    "TYR": (-65.0, -85.0),               
+    "TRP": (-65.0, -90.0),                
+    "PRO": (),                            
     "ALA": (),
     "GLY": (),
 }
@@ -100,10 +48,7 @@ _SPECS: Dict[str, List[Tuple[str, Tuple[str, str, str], float, float, object]]] 
         ("OG",  ("N", "CA", "CB"), 1.417, 110.8, ("chi", 0, 0.0)),
     ],
 
-    # THR: CB is a chiral centre (2S,3R). CG2 sits 120 deg BEHIND OG1 about
-    # the CA-CB axis. Measured N-CA-CB-CG2 minus N-CA-CB-OG1 = -120.1 deg over
-    # 196 residues (sd 0.1). This sign IS the stereochemistry; flipping it
-    # builds allo-threonine, which ff14SB has no template for.
+
     "THR": [
         ("OG1", ("N", "CA", "CB"), 1.420, 110.1, ("chi", 0, 0.0)),
         ("CG2", ("N", "CA", "CB"), 1.530, 109.2, ("chi", 0, -120.0)),

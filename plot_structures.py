@@ -1,14 +1,4 @@
-"""Plot predicted vs native structures, one figure each.
 
-Mirrors the plotting style of the original implementation: colored residue
-markers, per-residue labels, dashed backbone trace. Both plots are in
-ANGSTROMS. The predicted structure is Kabsch-superposed onto the native so
-the two figures are directly comparable orientation-wise.
-
-Usage:
-    python plot_structures.py GYDPETGTWG
-    python plot_structures.py SWTWEGNKWTWK
-"""
 import os
 import sys
 
@@ -59,7 +49,6 @@ def plot_chain(coords, sequence, title, path):
     return fig
 
 
-# ---------------------------------------------------------------- optimize
 rep = reps.TorsionStateRepresentation(len(SEQ), n_states=4)
 H = ham.FoldingHamiltonian(SEQ, rep)
 
@@ -76,7 +65,6 @@ print(f"bitstring  : {res['vqe_bitstring']}")
 
 os.makedirs("results", exist_ok=True)
 
-# ------------------------------------------------------- native comparison
 native_ca = None
 if PDB_ID:
     pdb_path = os.path.join("pdbs", f"{PDB_ID}.pdb")
@@ -98,7 +86,6 @@ if PDB_ID:
 else:
     pred_title = f"VQE prediction for '{SEQ}'  (E = {res['vqe_energy']:.2f})"
 
-# ------------------------------------------------------------------- plots
 print()
 plot_chain(pred_ca, SEQ, pred_title,
            os.path.join("results", f"{SEQ}_vqe_fold.png"))

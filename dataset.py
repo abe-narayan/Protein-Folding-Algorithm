@@ -1,11 +1,4 @@
-"""Short-peptide benchmark set from the RCSB PDB.
 
-All structures are experimentally determined. Splitting is sequence-identity
-clustered so that if any learned component is ever added, no near-homologue
-appears on both sides. The DEFAULT pipeline has no learned parameters, so
-the split exists for methodological hygiene and future use, not because it is
-currently load-bearing.
-"""
 import os
 import socket
 import urllib.request
@@ -78,7 +71,6 @@ def download_pdb(pdb_id: str, cache_dir: str = PDB_DIR) -> Optional[str]:
 
 
 def _identity(a: str, b: str) -> float:
-    """LCS-based identity proxy, normalized by the shorter sequence."""
     n, m = len(a), len(b)
     if n == 0 or m == 0:
         return 0.0
@@ -163,5 +155,4 @@ def check_no_cluster_leak(train, val, test) -> bool:
 
 
 def load_native(entry: PeptideEntry):
-    """Native sequence, coordinates, and torsions. EVALUATION USE ONLY."""
     return geo.native_coords_from_pdb(entry.pdb_path, chain_id=entry.chain_id)

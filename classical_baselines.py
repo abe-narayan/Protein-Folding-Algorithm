@@ -1,11 +1,4 @@
-"""Classical optimizers over the SAME Hamiltonian and representation.
 
-These exist so that the central question -- "is the VQE doing anything a
-cheap classical method cannot?" -- has an answer. They are budget-matched by
-energy evaluations, which is the fair currency: the VQE's circuit
-simulations are simulation overhead that would not exist on hardware, but
-its energy evaluations are real work either way.
-"""
 import math
 import time
 from typing import Dict, Optional
@@ -14,7 +7,6 @@ import numpy as np
 
 
 def random_search(hamiltonian, n_samples: int = 20000, seed: int = 0) -> Dict:
-    """Uniform random sampling over the configuration space. The floor."""
     rng = np.random.default_rng(seed)
     rep = hamiltonian.rep
     hamiltonian.reset_counters()
@@ -37,7 +29,6 @@ def random_search(hamiltonian, n_samples: int = 20000, seed: int = 0) -> Dict:
 
 def simulated_annealing(hamiltonian, n_steps: int = 20000, t_start: float = 4.0,
                         t_end: float = 1e-3, seed: int = 0) -> Dict:
-    """Single-site Metropolis annealing. The realistic classical competitor."""
     rng = np.random.default_rng(seed)
     rep = hamiltonian.rep
     hamiltonian.reset_counters()
@@ -79,11 +70,7 @@ def simulated_annealing(hamiltonian, n_steps: int = 20000, t_start: float = 4.0,
 
 
 def exhaustive_search(hamiltonian, max_bits: int = 22) -> Dict:
-    """Exact global minimum by enumeration. VALIDATION ONLY.
 
-    This is NEVER called from the VQE path. It exists solely to verify, on
-    small instances, that the VQE and SA are finding the true optimum.
-    """
     n = hamiltonian.n_bits
     if n > max_bits:
         raise ValueError(

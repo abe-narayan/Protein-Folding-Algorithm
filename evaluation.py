@@ -1,11 +1,4 @@
-"""Post-optimization structural evaluation. STRICTLY SEPARATED FROM SEARCH.
 
-Everything in this module reads native PDB structures. Nothing in this module
-may be imported by hamiltonian.py or vqe.py -- validation.py enforces this by
-auditing the PDB access log around optimization calls.
-
-ALL RMSD VALUES ARE IN ANGSTROMS. There is no normalized-coordinate path.
-"""
 import time
 from typing import Dict, List, Optional, Tuple
 import math
@@ -19,21 +12,7 @@ def representation_ceiling(rep, native_ca: np.ndarray,
                            native_phi: Optional[np.ndarray] = None,
                            native_psi: Optional[np.ndarray] = None,
                            seed: int = 0, iterations: int = 20000) -> Dict:
-    """Best CA-RMSD achievable by ANY bitstring under this representation.
 
-    Estimated by simulated annealing directly on CA-RMSD to the native.
-
-    WHY SEARCH RATHER THAN PROJECTION: an earlier version projected each
-    residue's native torsions onto the nearest library state independently.
-    That is locally optimal but NOT globally optimal, because NeRF
-    accumulates coordinates along the chain -- a small angular error early
-    displaces every downstream residue. At N=12 the projection produced a
-    "ceiling" of 9.50 A that three optimizers beat, which is impossible for
-    a true ceiling and exposed the error.
-
-    This function reads native coordinates and is EVALUATION ONLY. It must
-    never be called from the optimization path.
-    """
     t0 = time.time()
     rng = np.random.default_rng(seed)
     is_lat = getattr(rep, "is_lattice", False)
@@ -44,8 +23,7 @@ def representation_ceiling(rep, native_ca: np.ndarray,
         return geo.ca_rmsd(rep.build_coords(bits)["CA"], native_ca,
                            allow_scale=False)
 
-    # Seed the search with the greedy projection when available -- it is a
-    # reasonable starting point even though it is not the optimum.
+
     if is_lat:
         current = rep.random_bitstring(rng)
         n_slots, width, n_choices = rep.n_bonds, 2, 4
@@ -100,7 +78,7 @@ def evaluate_structure(bitstring: str, rep, hamiltonian,
     ca_r = geo.ca_rmsd(pred_ca, nat_ca, allow_scale=is_lat)
 
     if is_lat:
-        bb_r = float("nan")   # lattice has no N/C atoms
+        bb_r = float("nan")   
         ss_pred = "unavailable"
         ss_agree = float("nan")
         pred_cb_scaled, scale = geo.kabsch_superpose_with_scale(pred_cb, nat_cb)
@@ -123,11 +101,9 @@ def evaluate_structure(bitstring: str, rep, hamiltonian,
     lr_nat = {(i, j) for i, j in nat_contacts if j - i >= 5}
     _, lr_recall, _ = geo.contact_metrics(lr_pred, lr_nat)
 
-    # --- energy comparison under the SAME Hamiltonian ---
     pred_energy = hamiltonian.energy(bitstring)
     if is_lat:
-        # Lattice coordinates are dimensionless; the native cannot be scored
-        # in the same units. Reported as NaN rather than a misleading number.
+
         native_energy = float("nan")
     else:
         native_energy = hamiltonian.energy_from_coords(

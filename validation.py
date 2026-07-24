@@ -1,9 +1,4 @@
-"""Self-tests for correctness and scientific validity.
 
-Run with `python main.py --validate`. Every test prints PASS or FAIL and the
-suite returns False if any test fails. These are the checks that would
-otherwise have to be taken on trust.
-"""
 import inspect
 import math
 import os
@@ -31,7 +26,6 @@ def _report(name: str, ok: bool, detail: str = "") -> bool:
     return ok
 
 
-# ==========================================================================
 def test_bitstring_and_coordinate_lengths() -> bool:
     ok = True
     for n_res in (10, 12, 15):
@@ -55,7 +49,6 @@ def test_bitstring_and_coordinate_lengths() -> bool:
 
 
 def test_backbone_geometry_is_physical() -> bool:
-    """NeRF backbone must reproduce ideal bond lengths and CA-CA spacing."""
     r = reps.TorsionStateRepresentation(12, n_states=4)
     b = r.bitstring_from_states([0] * 12)     # all alpha-R
     c = r.build_coords(b)
@@ -70,11 +63,7 @@ def test_backbone_geometry_is_physical() -> bool:
 
 
 def test_helix_is_representable() -> bool:
-    """All-alpha-R must produce a right-handed helix: ~1.5 A rise, ~100 deg/res.
 
-    This is the test the tetrahedral lattice CANNOT pass, and it is the core
-    justification for replacing the representation.
-    """
     r = reps.TorsionStateRepresentation(14, n_states=4)
     ca = r.build_coords(r.bitstring_from_states([0] * 14))["CA"]
     # i to i+4 distance in an alpha helix is ~6.2 A
@@ -85,7 +74,6 @@ def test_helix_is_representable() -> bool:
 
 
 def test_chirality() -> bool:
-    """Alpha-R and alpha-L must give different (mirror) structures."""
     r = reps.TorsionStateRepresentation(12, n_states=4)
     right = r.build_coords(r.bitstring_from_states([0] * 12))["CA"]
     left = r.build_coords(r.bitstring_from_states([3] * 12))["CA"]
@@ -97,7 +85,6 @@ def test_chirality() -> bool:
 
 
 def test_mj_correction_changes_sign() -> bool:
-    """Corrected MJ must contain positive entries; raw MJ must not."""
     raw_vals = np.array(list(et.MJ_RAW.values()))
     cor_vals = np.array(list(et.MJ_CORRECTED.values()))
     ok = bool(np.all(raw_vals < 0) and np.any(cor_vals > 0))
@@ -132,7 +119,6 @@ def test_energy_rejects_wrong_length() -> bool:
 
 
 def test_steric_penalizes_clash() -> bool:
-    """A collapsed structure must have higher steric energy than an extended one."""
     seq = "AAAAAAAAAA"
     r = reps.TorsionStateRepresentation(len(seq), n_states=4)
     H = ham.FoldingHamiltonian(seq, r)
@@ -144,8 +130,6 @@ def test_steric_penalizes_clash() -> bool:
 
 
 def test_hbond_rewards_helix() -> bool:
-    """An all-helix structure must have more favourable H-bond energy than
-    an all-extended one. This validates the DSSP term's sign and matching."""
     seq = "AEAAAKEAAAKA"
     r = reps.TorsionStateRepresentation(len(seq), n_states=4)
     H = ham.FoldingHamiltonian(seq, r)
@@ -157,14 +141,7 @@ def test_hbond_rewards_helix() -> bool:
 
 
 def test_cvar_preserves_multiplicities() -> bool:
-    """THE critical CVaR test.
 
-    Energies [0, 10] with the low value drawn once and the high value 99
-    times. With alpha=0.5 the correct CVaR over 100 samples averages the
-    lowest 50 -> 1 copy of 0 and 49 copies of 10 -> 9.8. A de-duplicating
-    implementation would see [0, 10] and return 0.0. That difference is the
-    bug this test exists to catch.
-    """
     energies = [0.0] + [10.0] * 99
     got = vqe_mod.cvar_from_samples(energies, alpha=0.5)
     expected = (0.0 + 49 * 10.0) / 50.0
@@ -176,7 +153,6 @@ def test_cvar_preserves_multiplicities() -> bool:
 
 
 def test_cvar_sampled_converges_to_exact() -> bool:
-    """Sampled CVaR must converge to the distributional CVaR."""
     rng = np.random.default_rng(11)
     energies = rng.normal(0, 1, size=64)
     logits = rng.normal(0, 1, size=64)
@@ -197,15 +173,12 @@ def test_cvar_alpha_one_is_mean() -> bool:
 
 
 def test_vqe_is_full_system() -> bool:
-    """The circuit must act on ALL qubits, and no block API may exist."""
     seq = "GYDPETGTWG"
     r = reps.TorsionStateRepresentation(len(seq), n_states=4)
     H = ham.FoldingHamiltonian(seq, r)
     circuit = vqe_mod.build_global_circuit(H.n_qubits, layers=2)
     probs = np.asarray(circuit(np.zeros(vqe_mod.n_parameters(H.n_qubits, 2))))
     ok = (probs.size == 2 ** H.n_qubits)
-    # Check the module NAMESPACE, not the source text -- the docstring
-    # legitimately contains the word "block" while explaining its absence.
     names = [n for n in dir(vqe_mod) if "block" in n.lower()]
     ok &= (len(names) == 0)
     return _report("VQE is full-system (no block decomposition)", ok,
@@ -214,7 +187,6 @@ def test_vqe_is_full_system() -> bool:
 
 
 def test_vqe_does_not_enumerate() -> bool:
-    """Energy evaluations must be far below the configuration-space size."""
     seq = "GYDPETGTWG"
     r = reps.TorsionStateRepresentation(len(seq), n_states=4)
     H = ham.FoldingHamiltonian(seq, r)
@@ -228,7 +200,6 @@ def test_vqe_does_not_enumerate() -> bool:
 
 
 def test_final_answer_comes_from_final_circuit() -> bool:
-    """vqe_bitstring and best_seen_bitstring must be reported separately."""
     seq = "GYDPETGTWG"
     r = reps.TorsionStateRepresentation(len(seq), n_states=4)
     H = ham.FoldingHamiltonian(seq, r)
@@ -243,15 +214,11 @@ def test_final_answer_comes_from_final_circuit() -> bool:
 
 
 def test_reproducibility() -> bool:
-    """Same seed -> identical results. Different seed -> different results."""
     seq = "GYDPETGTWG"
 
     def run(s):
         r = reps.TorsionStateRepresentation(len(seq), n_states=4)
         H = ham.FoldingHamiltonian(seq, r)
-        # layers=1 -> 20 params. maxiter=120 gives COBYLA room to actually
-        # move; at maxiter=15 it terminated before building its simplex and
-        # every seed returned the same near-initial point.
         return vqe_mod.run_global_cvar_vqe(H, layers=1, shots=256, maxiter=120,
                                            restarts=1, seed=s, final_shots=256)
 
@@ -265,11 +232,7 @@ def test_reproducibility() -> bool:
 
 
 def test_rng_streams_are_independent() -> bool:
-    """Counter-based streams must differ across evaluation index.
 
-    This is the direct regression test for the original implementation's bug
-    of recreating default_rng(seed) inside every objective call.
-    """
     s0 = np.random.default_rng(np.random.SeedSequence([42, 0])).random(5)
     s1 = np.random.default_rng(np.random.SeedSequence([42, 1])).random(5)
     s0b = np.random.default_rng(np.random.SeedSequence([42, 0])).random(5)
@@ -278,7 +241,6 @@ def test_rng_streams_are_independent() -> bool:
 
 
 def test_no_pdb_access_during_optimization() -> bool:
-    """LEAKAGE AUDIT: the optimizer must never open a native structure."""
     seq = "GYDPETGTWG"
     r = reps.TorsionStateRepresentation(len(seq), n_states=4)
     H = ham.FoldingHamiltonian(seq, r)
@@ -294,7 +256,6 @@ def test_no_pdb_access_during_optimization() -> bool:
 
 
 def test_hamiltonian_has_no_native_input() -> bool:
-    """Structural check: FoldingHamiltonian's signature must have no PDB path."""
     params = set(inspect.signature(ham.FoldingHamiltonian.__init__).parameters)
     forbidden = {"pdb", "pdb_path", "native", "native_coords", "coords",
                  "entry", "structure", "target"}
@@ -304,8 +265,7 @@ def test_hamiltonian_has_no_native_input() -> bool:
 
 
 def test_rmsd_is_angstroms() -> bool:
-    """RMSD of a structure against itself is 0; against a 5 A shift is 0 too
-    (translation-invariant); against a genuinely different fold is O(A)."""
+
     r = reps.TorsionStateRepresentation(12, n_states=4)
     helix = r.build_coords(r.bitstring_from_states([0] * 12))["CA"]
     strand = r.build_coords(r.bitstring_from_states([1] * 12))["CA"]
@@ -318,7 +278,6 @@ def test_rmsd_is_angstroms() -> bool:
 
 
 def test_no_normalized_rmsd_path() -> bool:
-    """There must be no coordinate-normalization function anywhere."""
     ok = not hasattr(geo, "normalize_coords")
     src = inspect.getsource(ev)
     ok &= ("normalize_coords" not in src)
@@ -326,22 +285,8 @@ def test_no_normalized_rmsd_path() -> bool:
 
 
 def test_vqe_matches_exhaustive_on_tiny_system() -> bool:
-    """Measure the VQE's optimality gap on an enumerable system.
 
-    This is a MEASUREMENT, not a pass/fail correctness check. A nonzero gap
-    means the VQE did not reach the global optimum at this budget, which is
-    a real result about the algorithm and must be reported rather than tuned
-    away. It fails only if the gap is large enough to suggest the optimizer
-    is broken rather than merely imperfect.
-
-    Simulated annealing is run at MATCHED energy evaluations so the two
-    optimizers are compared on the currency that would also be spent on
-    quantum hardware.
-
-    NOTE: exhaustive_search is ground truth HERE ONLY. It is not part of the
-    VQE search path -- see test_vqe_does_not_enumerate.
-    """
-    seq = "AEKAAG"          # 6 residues -> 12 qubits -> 4096 configs
+    seq = "AEKAAG"        
     r = reps.TorsionStateRepresentation(len(seq), n_states=4)
     H = ham.FoldingHamiltonian(seq, r)
     exact = cb.exhaustive_search(H, max_bits=14)
@@ -366,12 +311,7 @@ def test_vqe_matches_exhaustive_on_tiny_system() -> bool:
 
 
 def test_ceiling_is_a_real_ceiling() -> bool:
-    """No sampled bitstring may score better than the reported ceiling.
 
-    Regression test for the projection bug: at N=12 the greedy per-residue
-    projection reported 9.50 A as the ceiling while three optimizers found
-    structures at 6.35-8.33 A. A ceiling that gets beaten is not a ceiling.
-    """
     seq = "SWTWEGNKWTWK"
     r = reps.TorsionStateRepresentation(len(seq), n_states=4)
     # Synthetic native built BY the representation, so a perfect (0 A)
@@ -393,7 +333,6 @@ def test_ceiling_is_a_real_ceiling() -> bool:
                    f"{violations}/300 random structures beat it")
 
 def test_representation_ceiling_computable() -> bool:
-    """Ceiling must be computable and finite for both representations."""
     seq = "GYDPETGTWG"
     r_t = reps.TorsionStateRepresentation(len(seq), n_states=4)
     # Synthetic "native": a helix built by the representation itself, so the
@@ -412,17 +351,10 @@ def test_representation_ceiling_computable() -> bool:
                    f"lattice {cl['ceiling_ca_rmsd']:.3f} A")
 
 
-# ==========================================================================
-
-
-# ==========================================================================
-# Sidechain construction (sidechains.py)
-# ==========================================================================
 _SC_PROBE_SEQ = "GASTDENKPYW"
 
 
 def _sc_backbones():
-    """One 11-residue backbone per torsion state, covering all built types."""
     r = reps.TorsionStateRepresentation(len(_SC_PROBE_SEQ), n_states=4)
     return [r.build_coords(r.bitstring_from_states([s] * len(_SC_PROBE_SEQ)))
             for s in range(4)]
@@ -436,7 +368,6 @@ def _sc_residue_atoms(key, bb, i):
 
 
 def _sc_bond_distances(key):
-    """Bond-graph hop counts between every pair of heavy atoms in a residue."""
     adj = {}
     for a, b in sc.residue_bonds(key):
         adj.setdefault(a, set()).add(b)
@@ -454,8 +385,7 @@ def _sc_bond_distances(key):
     return out
 
 
-# Ideal bond lengths, written out independently of sidechains.py internals so
-# this is a real check rather than a tautology. CA-CB is fixed by place_cb.
+
 _SC_IDEAL_BONDS = {
     "ALA": {("CA", "CB"): 1.5295},
     "SER": {("CA", "CB"): 1.5295, ("CB", "OG"): 1.417},
@@ -481,11 +411,7 @@ _SC_IDEAL_BONDS = {
 
 
 def test_sidechain_bond_lengths() -> bool:
-    """Every built sidechain must reproduce ideal bond lengths.
 
-    Checked across four backbone conformations, because a NeRF bug that
-    depends on the local frame would otherwise hide in a single geometry.
-    """
     worst, worst_at = 0.0, ""
     for bb in _sc_backbones():
         for i, aa in enumerate(_SC_PROBE_SEQ):
@@ -503,7 +429,6 @@ def test_sidechain_bond_lengths() -> bool:
 
 
 def test_sidechain_rings_planar() -> bool:
-    """Tyr and Trp ring systems must be planar."""
     rings = {"TYR": ["CG", "CD1", "CD2", "CE1", "CE2", "CZ", "OH"],
              "TRP": ["CG", "CD1", "CD2", "NE1", "CE2", "CE3", "CZ2", "CZ3",
                      "CH2"]}
@@ -524,11 +449,7 @@ def test_sidechain_rings_planar() -> bool:
 
 
 def test_sidechain_no_internal_clashes() -> bool:
-    """No two heavy atoms >=4 bonds apart may sit closer than 2.5 A.
 
-    1-2, 1-3 and 1-4 pairs are excluded: those distances are fixed by bond
-    lengths and angles, and inside a ring a 1-4 pair is legitimately ~2.2 A.
-    """
     worst, worst_at = 1e9, ""
     for bb in _sc_backbones():
         for i, aa in enumerate(_SC_PROBE_SEQ):
@@ -550,15 +471,7 @@ def test_sidechain_no_internal_clashes() -> bool:
 
 
 def test_sidechain_chirality() -> bool:
-    """Building on a mirrored backbone must NOT give the mirrored sidechain.
 
-    Reflect the backbone, rebuild, reflect the result back. An achiral
-    construction returns the original; a correctly chiral one cannot, because
-    the fixed chi angles keep their sign in the mirrored frame. Ala and Gly
-    are excluded: Gly has no sidechain and Ala's only sidechain atom is CB,
-    which is an input here (its chirality belongs to place_cb and is already
-    covered by test_chirality).
-    """
     M = np.diag([-1.0, 1.0, 1.0])
     bb = _sc_backbones()[1]
     smallest, smallest_at = 1e9, ""
@@ -581,10 +494,7 @@ def test_sidechain_chirality() -> bool:
 
 
 def test_sidechain_rejects_unimplemented_residue() -> bool:
-    """Unsupported residues must raise NotImplementedError naming the residue.
 
-    A silent stub would corrupt the Amber energy without ever failing.
-    """
     probe = ([0.0, 0.0, 0.0], [1.458, 0.0, 0.0], [2.0, 1.42, 0.0],
              [1.99, -0.77, -1.21])
     ok = True
@@ -606,7 +516,6 @@ def test_sidechain_rejects_unimplemented_residue() -> bool:
 
 
 def test_sidechain_atom_counts() -> bool:
-    """Heavy-atom counts must match the PDB standard for each residue type."""
     expected = {"GLY": 4, "ALA": 5, "SER": 6, "THR": 7, "PRO": 7, "ASP": 8,
                 "ASN": 8, "GLU": 9, "LYS": 9, "TYR": 12, "TRP": 14}
     ok = True
@@ -630,15 +539,8 @@ def test_sidechain_atom_counts() -> bool:
 
 
 
-# ==========================================================================
-# Amber ff14SB + GBn2 Hamiltonian
-#
-# Building the topology and relaxing the reference hydrogens costs ~0.5 s and
-# each unique structure costs ~130 ms, so the Hamiltonian is built once and
-# shared across these tests. The native structure is parsed lazily and kept
-# separate, so the leakage audit can reset the PDB log without racing it.
-# ==========================================================================
-_AMBER_SEQ = "GYDPETGTWG"           # chignolin, 1UAO
+
+_AMBER_SEQ = "GYDPETGTWG"         
 _AMBER_CACHE = {}
 
 
@@ -665,15 +567,7 @@ def _amber_native():
 
 
 def test_amber_energy_is_deterministic() -> bool:
-    """THE hydrogen-determinism test.
 
-    Modeller.addHydrogens places hydrogens at literal random positions, which
-    on Day 1 produced 48.9 kcal/mol of spread across identical runs. The whole
-    design of AmberHamiltonian -- topology built once, hydrogens frozen into
-    rigid local frames, CPU platform pinned to one thread -- exists to make
-    E(x) a pure function of the bitstring. Anything above 1e-12 means that
-    guarantee is broken and every energy comparison downstream is noise.
-    """
     H, rep = _amber_hamiltonian()
     rng = np.random.default_rng(3)
     worst = 0.0
@@ -694,12 +588,7 @@ def test_amber_energy_is_deterministic() -> bool:
 
 
 def test_amber_native_below_helix() -> bool:
-    """GO/NO-GO GATE. The native fold must score below a generic all-helix.
 
-    This is the check the hand-weighted energy failed: it ranked native
-    chignolin at +5.51 while returning structures at -2.17. If Amber cannot
-    clear this bar there is no point optimizing against it.
-    """
     H, rep = _amber_hamiltonian()
     _, coords, phi, psi = _amber_native()
     e_native = H.energy_from_coords(coords, phi, psi)
@@ -711,13 +600,7 @@ def test_amber_native_below_helix() -> bool:
 
 
 def test_amber_backbone_restraints_hold() -> bool:
-    """The capped minimization must not destroy the bitstring -> structure map.
 
-    Restraints are on backbone N, CA and C, so the CA trace is compared in the
-    LAB FRAME with no superposition -- the strict form of the test. If this
-    drifts, two different bitstrings can relax into the same structure and the
-    energy stops being a function of the encoding.
-    """
     H, rep = _amber_hamiltonian()
     rng = np.random.default_rng(11)
     worst, where = 0.0, ""
@@ -750,14 +633,7 @@ def test_amber_rejects_wrong_length() -> bool:
 
 
 def test_amber_no_pdb_access_during_energy() -> bool:
-    """LEAKAGE AUDIT for the new Hamiltonian.
 
-    AmberHamiltonian builds a topology, adds hydrogens and minimizes, which is
-    a lot more machinery than the old energy had -- and OpenMM is perfectly
-    capable of reading a PDB. This proves none of that machinery reaches a
-    native structure. The Hamiltonian is constructed INSIDE the audited window
-    so that __init__ is covered too, not just .energy().
-    """
     rep = reps.TorsionStateRepresentation(len(_AMBER_SEQ), n_states=4)
     geo.reset_pdb_log()
     H = amb.AmberHamiltonian(_AMBER_SEQ, rep)

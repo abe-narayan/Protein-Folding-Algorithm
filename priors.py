@@ -1,25 +1,4 @@
-"""OPTIONAL external sequence prior. OFF BY DEFAULT.
 
-The default pipeline does not import or use anything here. This module exists
-only so that the ablation "does an ESM contact prior change the picture?" can
-be run and reported honestly as a SEPARATE, clearly-labelled variant.
-
-WHY IT IS OFF BY DEFAULT
-------------------------
-A previous design made an ESM-2 contact prior a core energy term. The audit
-of that design concluded that the prior was responsible for essentially all
-of the measured accuracy, which makes the result an ESM result rather than a
-folding-energy or VQE result. Requirement 7 of this project forbids a
-pretrained model from directly providing the target structure. Keeping the
-prior available but non-default resolves both concerns.
-
-WHAT IT IS NOT
---------------
-This never sees native coordinates. It is sequence-only. But a contact map
-predicted by a model trained on the PDB is, for a peptide as well-studied as
-chignolin, very close to a lookup of the answer. Any result using it must be
-reported with that caveat stated.
-"""
 import math
 from typing import Dict, Optional
 
@@ -71,12 +50,9 @@ class SequencePrior:
         _, _, tokens = self._batch_converter([("seq", sequence)])
         with torch.no_grad():
             out = model(tokens, return_contacts=True)
-        # .tolist() avoids the torch<->numpy C bridge, which breaks under
-        # some torch/numpy version combinations.
         return np.array(out["contacts"][0].detach().cpu().tolist())
 
     def _heuristic_contacts(self, sequence: str) -> np.ndarray:
-        """Transparent hydrophobicity-based prior. Not a neural network."""
         from energy_terms import KD
         n = len(sequence)
         kd = np.array([KD.get(a, 0.0) for a in sequence])

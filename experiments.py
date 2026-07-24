@@ -1,8 +1,4 @@
-"""Experiment drivers: main comparison, ablations, baselines, scaling.
 
-Every experiment writes a CSV row per (protein, method, seed) so that results
-are analyzable after the fact and nothing depends on scrollback.
-"""
 import csv
 import json
 import os
@@ -67,7 +63,6 @@ def default_vqe_config() -> Dict:
     }
 
 
-# ==========================================================================
 def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
             n_states: int = 4, seed: int = 0,
             vqe_config: Optional[Dict] = None,
@@ -91,7 +86,6 @@ def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
               f"rep={representation} qubits={rep.n_qubits} "
               f"space={d['config_space']:.3g} method={method} seed={seed}")
 
-    # ---------------- OPTIMIZATION (no native structure in scope) ---------
     geo.reset_pdb_log()
     t0 = time.time()
 
@@ -130,7 +124,6 @@ def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
     assert len(geo.get_pdb_log()) == 0, \
         "LEAKAGE: a native PDB was read during optimization"
 
-    # ---------------- EVALUATION (native structure loaded here) -----------
     native_seq, native_coords, native_phi, native_psi = ds.load_native(entry)
     metrics = ev.evaluate_structure(chosen, rep, H, native_seq, native_coords,
                                     native_phi, native_psi)
@@ -181,19 +174,11 @@ def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
     return row
 
 
-# ==========================================================================
 def experiment_main_comparison(entries: List[ds.PeptideEntry],
                                seeds: List[int],
                                vqe_config: Optional[Dict] = None,
                                csv_name: str = "main_comparison.csv") -> List[Dict]:
-    """THE central experiment.
 
-    Four arms, all on the SAME peptides, SAME seeds, SAME evaluation:
-      A) lattice representation + global VQE   (original representation)
-      B) torsion representation + global VQE   (improved representation)
-      C) torsion representation + simulated annealing (classical control)
-      D) torsion representation + random search (floor)
-    """
     path = os.path.join(_ensure_results_dir(), csv_name)
     cfg = dict(default_vqe_config() if vqe_config is None else vqe_config)
     rows = []
@@ -259,16 +244,11 @@ def _print_summary(rows: List[Dict]) -> None:
         print()
 
 
-# ==========================================================================
 def experiment_energy_ablation(entries: List[ds.PeptideEntry],
                                seeds: List[int],
                                vqe_config: Optional[Dict] = None,
                                csv_name: str = "energy_ablation.csv") -> List[Dict]:
-    """Turn off one energy term at a time. Torsion representation, global VQE.
 
-    Also includes the raw-MJ variant, which directly tests whether the MJ
-    self-energy correction matters.
-    """
     path = os.path.join(_ensure_results_dir(), csv_name)
     cfg = dict(default_vqe_config() if vqe_config is None else vqe_config)
     rows = []
@@ -346,14 +326,9 @@ def experiment_energy_ablation(entries: List[ds.PeptideEntry],
     return rows
 
 
-# ==========================================================================
 def experiment_vqe_hyperparameters(entry: ds.PeptideEntry, seeds: List[int],
                                    csv_name: str = "vqe_hparams.csv") -> List[Dict]:
-    """Sweep alpha, layers, and optimizer on one peptide.
-
-    Answers: does CVaR (alpha < 1) beat expectation (alpha = 1)? Does depth
-    help? Is COBYLA or SPSA the better optimizer at this scale?
-    """
+ 
     path = os.path.join(_ensure_results_dir(), csv_name)
     rows = []
     print("=" * 72)
@@ -429,16 +404,10 @@ def experiment_scaling_report(max_length: int = 22,
     return out
 
 
-# ==========================================================================
 def experiment_prior_ablation(entries: List[ds.PeptideEntry], seeds: List[int],
                               vqe_config: Optional[Dict] = None,
                               csv_name: str = "prior_ablation.csv") -> List[Dict]:
-    """OPTIONAL: add a sequence-derived contact prior as an extra energy term.
 
-    Clearly labelled as an ablation. The default pipeline does not use this.
-    Any result obtained with the prior must be reported as a prior-assisted
-    result, not as a physics-energy result.
-    """
     import priors
 
     path = os.path.join(_ensure_results_dir(), csv_name)
@@ -530,7 +499,6 @@ def experiment_prior_ablation(entries: List[ds.PeptideEntry], seeds: List[int],
     return rows
 
 
-# ==========================================================================
 def save_prediction(entry: ds.PeptideEntry, bitstring: str, rep,
                     filename: Optional[str] = None) -> str:
     coords = rep.build_coords(bitstring)

@@ -1,69 +1,4 @@
-"""Global full-system CVaR-VQE.
 
-WHAT THIS IS
-------------
-ONE parameterized quantum circuit acting on ALL n_qubits of the problem. The
-whole protein configuration is optimized jointly. There is no block
-decomposition, no coordinate descent, and no enumeration of the configuration
-space anywhere in the search path.
-
-ANSATZ
-------
-Hardware-efficient, `layers` repetitions of:
-
-    RY(theta_{l,q}) on every qubit q
-    CNOT chain q -> q+1 for q = 0..n-2
-    CNOT ring closure n-1 -> 0        (if n > 2 and ring=True)
-
-Parameter count: layers * n_qubits.
-
-Entanglement: the CNOT chain+ring generates genuine multi-qubit entanglement
-in the state |psi(theta)>. However -- see the audit -- because H is diagonal
-and all gates are real, the resulting *measurement distribution* is one that
-a classical model could also represent. Entanglement is present in the state;
-it is not being used as a computational resource in a way that is known to
-help. This is stated plainly rather than dressed up.
-
-OBJECTIVE
----------
-CVaR_alpha over sampled energies, preserving sample multiplicities:
-
-    draw S bitstrings x_1..x_S ~ p_theta(x)
-    sort their energies ascending
-    CVaR = mean of the lowest ceil(alpha * S) energies
-
-Multiplicities are preserved: if a bitstring is drawn 40 times it contributes
-40 entries to the sorted list. This is the correct sample CVaR estimator, and
-it is the behaviour of the original implementation, retained deliberately.
-
-RNG DISCIPLINE
---------------
-The original implementation recreated `np.random.default_rng(seed)` inside
-every objective call, so all evaluations shared one fixed random tape. That
-is fixed here with a *counter-based* stream: evaluation k uses
-`default_rng(SeedSequence([seed, k]))`. This gives (a) statistically
-independent samples across evaluations, and (b) exact reproducibility for a
-given seed, and (c) common random numbers within a single objective call so
-that finite-difference gradients are not swamped by sampling noise.
-
-FINAL ANSWER EXTRACTION
------------------------
-Two quantities are reported SEPARATELY and must never be conflated:
-
-  best_seen        lowest-energy bitstring encountered at ANY point during
-                   optimization, including early random evaluations. This is
-                   an *anytime* result, not a VQE result. The original
-                   implementation reported this as "the VQE answer", which
-                   overstated what the optimizer achieved.
-
-  vqe_solution     obtained from the FINAL optimized circuit only: draw
-                   `final_shots` samples from p_theta*(x) and take the
-                   lowest-energy sample. Also reported: `vqe_modal`, the
-                   single most probable bitstring under p_theta*.
-
-If best_seen is much better than vqe_solution, the VQE did not converge to a
-useful distribution and the run should be reported as such.
-"""
 import math
 import time
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -73,16 +8,8 @@ import pennylane as qml
 from scipy.optimize import minimize
 
 
-# ==========================================================================
-# CVaR
-# ==========================================================================
 def cvar_from_samples(energies: Sequence[float], alpha: float) -> float:
-    """Sample CVaR: mean of the lowest ceil(alpha*S) energies.
 
-    `energies` MUST contain one entry per DRAWN SAMPLE, including repeats.
-    Passing a de-duplicated list silently destroys the probability weighting
-    and is a correctness bug (it was one in a previous design).
-    """
     e = np.sort(np.asarray(energies, dtype=float))
     if e.size == 0:
         raise ValueError("cvar_from_samples received no samples")
@@ -94,12 +21,7 @@ def cvar_from_samples(energies: Sequence[float], alpha: float) -> float:
 
 def cvar_from_distribution(energies: np.ndarray, probs: np.ndarray,
                            alpha: float) -> float:
-    """Exact CVaR against a full probability vector.
 
-    VALIDATION ONLY -- requires enumerating all 2^n energies, which is
-    exactly what the VQE search path must not do. Used by validation.py to
-    confirm that cvar_from_samples converges to the right value.
-    """
     energies = np.asarray(energies, dtype=float)
     probs = np.clip(np.asarray(probs, dtype=float), 0.0, None)
     tot = probs.sum()
@@ -120,9 +42,7 @@ def cvar_from_distribution(energies: np.ndarray, probs: np.ndarray,
     return esum / acc if acc > 0 else float(energies[order[0]])
 
 
-# ==========================================================================
-# Ansatz / circuit
-# ==========================================================================
+
 def build_global_circuit(n_qubits: int, layers: int, ring: bool = True,
                          device: str = "lightning.qubit") -> Callable:
     """One circuit over ALL n_qubits. Returns probs over the full register."""
@@ -150,9 +70,6 @@ def n_parameters(n_qubits: int, layers: int) -> int:
     return layers * n_qubits
 
 
-# ==========================================================================
-# Tracker
-# ==========================================================================
 class BestSeenTracker:
     """Records the lowest-energy bitstring seen anywhere during a run."""
 
@@ -168,9 +85,6 @@ class BestSeenTracker:
             self.best_bitstring = bitstring
 
 
-# ==========================================================================
-# Single VQE run
-# ==========================================================================
 def _run_single(hamiltonian, circuit, n_qubits: int, layers: int,
                 alpha: float, shots: int, maxiter: int, seed: int,
                 optimizer: str, tracker: BestSeenTracker,
@@ -179,10 +93,7 @@ def _run_single(hamiltonian, circuit, n_qubits: int, layers: int,
     n_par = n_parameters(n_qubits, layers)
 
     init_rng = np.random.default_rng(np.random.SeedSequence([seed, 0xC0FFEE]))
-    # Centre the RY angles at pi/2 (equal superposition) rather than 0, and
-    # perturb around that. Initialising near theta=0 starts the circuit at
-    # |00...0>, a near-deterministic state from which a CVaR objective has
-    # little incentive -- and COBYLA no gradient signal -- to spread out.
+
     params0 = (math.pi / 2.0) + init_rng.normal(0.0, init_scale, size=n_par)
 
     history: List[float] = []
@@ -191,7 +102,6 @@ def _run_single(hamiltonian, circuit, n_qubits: int, layers: int,
     def objective(params: np.ndarray) -> float:
         k = eval_counter["n"]
         eval_counter["n"] = k + 1
-        # Counter-based stream: independent across evaluations, reproducible.
         rng = np.random.default_rng(np.random.SeedSequence([seed, k]))
 
         probs = np.asarray(circuit(params), dtype=float)
@@ -204,9 +114,7 @@ def _run_single(hamiltonian, circuit, n_qubits: int, layers: int,
 
         idx = rng.choice(probs.size, size=shots, p=probs)
 
-        # Evaluate energy once per UNIQUE index, then expand back to the full
-        # sample list. This preserves multiplicities in the CVaR while not
-        # paying the energy cost more than once per distinct structure.
+ 
         uniq, inverse = np.unique(idx, return_inverse=True)
         uniq_energies = np.empty(uniq.size, dtype=float)
         for m, u in enumerate(uniq):
@@ -252,13 +160,7 @@ class _SPSAResult:
 
 
 def _spsa(objective, x0, n_iter, rng, a=0.25, c=0.15):
-    """Simultaneous Perturbation Stochastic Approximation.
 
-    Two objective evaluations per iteration regardless of dimension, which
-    is the right choice for noisy shot-based objectives at high parameter
-    count. COBYLA is the default because it is deterministic given the RNG
-    discipline above and converges faster at these sizes.
-    """
     x = np.array(x0, dtype=float)
     A = max(1, n_iter // 10)
     best_x, best_f = x.copy(), objective(x)
@@ -275,9 +177,6 @@ def _spsa(objective, x0, n_iter, rng, a=0.25, c=0.15):
     return _SPSAResult(best_x, best_f)
 
 
-# ==========================================================================
-# Public entry point
-# ==========================================================================
 def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
                         shots: int = 2048, maxiter: int = 300,
                         restarts: int = 4, seed: int = 0,
@@ -328,7 +227,6 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
             best_run = run
     total_runtime = time.time() - t0
 
-    # ---- FINAL VQE SOLUTION: sample the final optimized circuit only ----
     fmt = f"0{n_qubits}b"
     final_probs = np.asarray(circuit(best_run["final_params"]), dtype=float)
     final_probs = np.clip(final_probs, 0.0, None)
@@ -348,7 +246,6 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
     modal_bits = format(int(np.argmax(final_probs)), fmt)
     modal_energy = hamiltonian.energy(modal_bits)
 
-    # Concentration diagnostics: how peaked did the circuit actually get?
     p_sorted = np.sort(final_probs)[::-1]
     top1 = float(p_sorted[0])
     top16 = float(p_sorted[:16].sum())
@@ -356,22 +253,18 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
     entropy = float(-np.sum(nz * np.log2(nz)))
 
     return {
-        # --- final VQE answer (from the optimized circuit) ---
         "vqe_bitstring": vqe_bits,
         "vqe_energy": float(vqe_energy),
         "vqe_modal_bitstring": modal_bits,
         "vqe_modal_energy": float(modal_energy),
-        # --- anytime best (NOT the VQE answer) ---
         "best_seen_bitstring": tracker.best_bitstring,
         "best_seen_energy": float(tracker.best_energy),
-        # --- diagnostics ---
         "final_objective": best_run["final_objective"],
         "history": best_run["history"],
         "distribution_top1_prob": top1,
         "distribution_top16_mass": top16,
         "distribution_entropy_bits": entropy,
         "max_entropy_bits": float(n_qubits),
-        # --- budget accounting ---
         "n_qubits": n_qubits,
         "n_parameters": n_parameters(n_qubits, layers),
         "layers": layers,

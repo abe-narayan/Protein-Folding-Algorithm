@@ -1,39 +1,4 @@
-"""Discrete conformational representations for a GLOBAL VQE.
 
-Two representations are provided:
-
-  TorsionStateRepresentation   (default)  -- per-residue (phi, psi) state
-  TetrahedralLatticeRepresentation        -- the original 4-direction lattice
-
-Both expose the same interface so they can be swapped in ablations:
-
-    n_qubits            int
-    n_bits              int  (== n_qubits; H is diagonal)
-    decode(bitstring)   -> geometry payload
-    build_coords(bits)  -> dict of atom arrays (or CA-only for the lattice)
-    random_bitstring(rng)
-    native_bitstring(...)  -> best representable approximation to a native
-    ceiling_rmsd(...)      -> best achievable CA-RMSD under this representation
-
-QUBIT SCALING (this is the central design constraint):
-
-    Torsion, K states:  ceil(log2 K) * N qubits
-        K=4  -> 2N   qubits   (DEFAULT)
-        K=8  -> 3N   qubits
-    Tetrahedral lattice: 2(N-1) qubits
-
-For a genuine full-system VQE the entire register is simulated at once, so
-statevector memory is 2^n_qubits complex amplitudes. At 16 bytes each:
-
-    20 qubits -> 16 MB      (N=10 torsion-4)
-    24 qubits -> 268 MB     (N=12 torsion-4)
-    28 qubits -> 4.3 GB     (N=14 torsion-4)
-    30 qubits -> 17 GB      (N=15 torsion-4)  <-- practical wall
-    40 qubits -> 17 TB      (N=20 torsion-4)  <-- NOT SIMULABLE
-
-There is no way around this while keeping one global circuit. That is an
-honest statement of the method's limit, not a defect of the implementation.
-"""
 import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -42,19 +7,7 @@ import numpy as np
 import protein_geometry as geo
 
 
-# --------------------------------------------------------------------------
-# Torsion state libraries
-#
-# Each state is a (phi, psi) pair sitting in a populated Ramachandran basin.
-# Unlike a uniform torsion grid, every state is physically realizable, so no
-# amplitude is wasted on forbidden regions.
-#
-# The 4-state library is the DEFAULT because it costs 2 bits/residue -- the
-# same qubit count as the original tetrahedral lattice -- while being able to
-# express alpha helices, beta strands, polyproline-II, and left-handed
-# (glycine) turns with correct L-amino-acid chirality. The lattice can express
-# none of these.
-# --------------------------------------------------------------------------
+
 STATES_4: List[Tuple[float, float]] = [
     (-63.0, -42.0),    # 0  alpha-R  : right-handed helix
     (-120.0, 130.0),   # 1  beta     : extended strand
@@ -88,7 +41,6 @@ def _ang_diff_deg(a: float, b: float) -> float:
 
 
 class TorsionStateRepresentation:
-    """Per-residue discrete (phi, psi) state. Default representation."""
 
     name = "torsion"
     is_lattice = False
@@ -106,7 +58,6 @@ class TorsionStateRepresentation:
         self._phi = np.array([math.radians(p) for p, _ in self.states])
         self._psi = np.array([math.radians(q) for _, q in self.states])
 
-    # -- decode -------------------------------------------------------------
     def state_indices(self, bitstring: str) -> List[int]:
         self._check(bitstring)
         b = self.bits_per_residue
@@ -117,8 +68,7 @@ class TorsionStateRepresentation:
         idx = self.state_indices(bitstring)
         phi = self._phi[idx].copy()
         psi = self._psi[idx].copy()
-        # Terminal torsions are undefined; pin them to canonical values so
-        # that the same bitstring always yields the same geometry.
+
         phi[0] = geo.DEFAULT_PHI
         psi[self.n_residues - 1] = geo.DEFAULT_PSI
         return phi, psi
@@ -146,10 +96,7 @@ class TorsionStateRepresentation:
             [self._nearest_state(phi[i], psi[i]) for i in range(self.n_residues)])
 
     def native_bitstring(self, native_phi, native_psi, **_) -> str:
-        """Best representable approximation to a native structure.
 
-        EVALUATION ONLY. Never used to seed or bias the VQE search.
-        """
         return self.angles_to_bits(native_phi, native_psi)
 
     # -- sampling -----------------------------------------------------------
@@ -177,9 +124,7 @@ class TorsionStateRepresentation:
         }
 
 
-# --------------------------------------------------------------------------
-# Original tetrahedral lattice — RETAINED for ablation
-# --------------------------------------------------------------------------
+
 LATTICE_DIRECTIONS = {
     (0, 0): (1.0, 1.0, 1.0),
     (0, 1): (1.0, -1.0, -1.0),
@@ -189,21 +134,7 @@ LATTICE_DIRECTIONS = {
 
 
 class TetrahedralLatticeRepresentation:
-    """The original 4-direction tetrahedral lattice.
 
-    Retained VERBATIM in behaviour so that the "did the representation change
-    help?" ablation is a fair test of your original design.
-
-    Known limitations (documented, not hidden):
-      * Bond angles are restricted to ~70.5/109.5/180 deg. Real CA-CA-CA
-        pseudo-angles cluster near 90 (helix) and 120-130 (strand), so an
-        alpha helix is NOT representable.
-      * The lattice is achiral: mirror-image folds have identical energy, so
-        right-handed helix preference cannot be encoded.
-      * Coordinates are in dimensionless lattice units; RMSD requires an
-        isotropic scale fit (handled by kabsch_superpose_with_scale).
-      * Chain reversal (backtracking) is geometrically allowed.
-    """
 
     name = "lattice"
     is_lattice = True
@@ -236,12 +167,7 @@ class TetrahedralLatticeRepresentation:
         return np.array(coords, dtype=float)
 
     def build_coords(self, bitstring: str) -> Dict[str, np.ndarray]:
-        """CA-only. CB is aliased to CA so shared energy terms remain callable.
 
-        No N/C/O exist on the lattice, so hydrogen-bond terms are structurally
-        unavailable for this representation -- the Hamiltonian detects this
-        and omits them. That asymmetry is reported, not silently absorbed.
-        """
         ca = self.decode(bitstring)
         return {"CA": ca, "CB": ca.copy()}
 
@@ -249,14 +175,7 @@ class TetrahedralLatticeRepresentation:
                          native_ca: Optional[np.ndarray] = None,
                          rng: Optional[np.random.Generator] = None,
                          iterations: int = 20000) -> str:
-        """Best lattice approximation to a native CA trace, by annealing.
 
-        EVALUATION ONLY (representation ceiling). This function reads native
-        coordinates and must never be called from the optimization path.
-        Simulated annealing over bond directions, scoring by scaled Kabsch
-        RMSD. This generalizes `real_structure_to_bitstring` from the
-        original implementation.
-        """
         if native_ca is None:
             raise ValueError("lattice native_bitstring requires native_ca")
         if rng is None:

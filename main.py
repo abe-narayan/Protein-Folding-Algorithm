@@ -1,15 +1,4 @@
-"""CLI for the global CVaR-VQE peptide structure-prediction pipeline.
 
-  python main.py --validate
-  python main.py --scaling
-  python main.py --predict --sequence GYDPETGTWG
-  python main.py --main-comparison --proteins 1UAO,5AWL --seeds 0,1,2
-  python main.py --energy-ablation --proteins 1UAO --seeds 0,1,2
-  python main.py --hparams --protein 1UAO --seeds 0,1,2
-  python main.py --prior-ablation --proteins 1UAO --seeds 0,1,2
-
-Defaults use NO pretrained model and NO learned weights.
-"""
 import argparse
 import sys
 from typing import List
@@ -73,7 +62,6 @@ def cmd_predict(args) -> int:
     print(f"objective evaluations   : {res['n_objective_evals_total']}")
     print(f"runtime                 : {res['runtime']:.1f} s")
 
-    # ---- per-term energy breakdown (diagnostic) ----
     print()
     print("energy breakdown (weighted contributions):")
     comparisons = [("vqe", res["vqe_bitstring"])]
@@ -90,11 +78,7 @@ def cmd_predict(args) -> int:
         totals = " ".join(f"{H.energy(b):>12.3f}" for _, b in comparisons)
     print(f"  {'TOTAL':<16} {'':>7} {totals}")
 
-    # ---- native-structure reference breakdown (DIAGNOSTIC ONLY) ----
-    # This reads a PDB and therefore runs strictly AFTER optimization is
-    # complete. It never influences the search; it exists so the energy of a
-    # known-correct structure can be compared term-by-term against what the
-    # optimizer produced.
+
     import os as _os
     _pdb_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "pdbs")
     _known = {"GYDPETGTWG": "1UAO"}
@@ -116,11 +100,7 @@ def cmd_predict(args) -> int:
                     print(f"  {'TOTAL':<16} {'':>7} "
                           f"{et.total_from_components(_ncomp, H.weights):>12.3f}")
 
-                    # Per-residue torsion diagnostic: the native's torsion
-                    # term is the largest single penalty in the table, which
-                    # should not happen for a real crystal structure. This
-                    # shows which residues are being penalized and what their
-                    # actual backbone angles are.
+
                     import math as _math
                     print()
                     print("  native per-residue torsion penalty:")
@@ -133,14 +113,7 @@ def cmd_predict(args) -> int:
                         print(f"  {_i+1:>3} {seq[_i]:>3} {_p:>8.1f} "
                               f"{_q:>8.1f} {_pen:>9.3f}")
 
-                    # Contact-term diagnostic. The native's contact energy is
-                    # POSITIVE (+0.201) on a structure whose stability comes
-                    # partly from Tyr-Trp stacking, which should register as
-                    # favourable. This lists every |i-j|>=3 pair with its
-                    # CB-CB distance, the switching-function value, the
-                    # corrected-MJ energy, and their product, so it is visible
-                    # whether the 4.5-8.5 A window is missing real contacts or
-                    # whether the potential simply has no signal here.
+
                     _nCB = _np.asarray(_ncoords["CB"], dtype=float)
                     _kd, _q_, _mj = et.sequence_arrays(seq, True)
                     print()

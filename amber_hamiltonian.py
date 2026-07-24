@@ -1,116 +1,3 @@
-"""Amber ff14SB + GBn2 folding Hamiltonian.
-
-Drop-in replacement for `hamiltonian.FoldingHamiltonian`. Same interface:
-
-    .energy(bitstring)       .energy_from_coords(coords, phi, psi)
-    .components(bitstring)   .n_qubits  .n_bits  .rep  .sequence  .weights
-    .reset_counters()        .cache_size()       .n_energy_evaluations
-
-WHY THIS EXISTS
----------------
-The 7-term hand-weighted energy in energy_terms.py ranks native chignolin at
-+5.51 while returning structures at -2.17: the native is scored WORSE than
-the prediction, so the search cannot help. VQE, simulated annealing and random
-search all land within 0.25 A of each other, which says the search is solved
-and the energy is wrong. This module replaces the energy outright with a real
-molecular-mechanics force field. Nothing else in the pipeline changes.
-
-E(x) = ff14SB bonded + nonbonded + GBn2 implicit solvation, in kcal/mol,
-evaluated after a capped, backbone-restrained minimization of the structure
-that `rep` decodes from x.
-
-LEAKAGE GUARANTEE (unchanged from FoldingHamiltonian): the constructor takes
-a sequence, a representation and numerical settings. No PDB path, no native
-coordinates, no code path by which a native structure can influence E(x).
-`energy_from_coords` is an EVALUATION path used to score the native for the
-energy-gap metric, exactly as before.
-
---------------------------------------------------------------------------
-HYDROGEN DETERMINISM -- the central design problem
---------------------------------------------------------------------------
-`Modeller.addHydrogens` literally places hydrogens at random positions:
-
-    delta = Vec3(random.random(), random.random(), random.random())*nanometer
-
-and then relaxes them. Day 1 measured 48.9 kcal/mol of spread across four
-identical runs on trpzip, with hydrogen positions differing by up to 1.75 A.
-`random.seed(0)` reduces this but does not remove it, because addHydrogens'
-own relaxation runs on the DEFAULT platform, i.e. multithreaded CPU, whose
-force summation order is not reproducible.
-
-`test_energy_is_finite_and_deterministic` requires |e1 - e2| < 1e-12, so
-hydrogens must be a pure function of the heavy atoms.
-
-CHOSEN STRATEGY: frozen local frames -- the second of the two options, i.e.
-minimize hydrogens ONCE and thereafter transform them rigidly with their
-parent heavy atoms.
-
-  * Topology, System and Context are built once per sequence in __init__.
-    Hydrogens are added exactly once, there.
-  * For every hydrogen h with heavy parent P, a rigid orthonormal frame
-    (P; A, B) is chosen from heavy atoms whose geometry relative to P does
-    NOT depend on any torsion the bitstring can change. h's displacement is
-    stored as three fixed coefficients in that frame.
-  * Per evaluation: rebuild heavy atoms, rebuild each frame from the new
-    heavy positions, replay the stored coefficients, setPositions, minimize,
-    read the energy. No hydrogen is ever re-placed by Modeller.
-
-WHY FRAMES RATHER THAN GEOMETRIC PLACEMENT. Geometric placement would mean
-hand-coding H templates for every parent environment -- sp3 CH/CH2/CH3, sp2
-aromatic CH, amide NH, NH3+ and OH rotors -- and those hand-coded internal
-coordinates would not be ff14SB's own equilibrium geometry, so every
-structure would start with a spurious hydrogen strain that the capped
-minimization has to spend its 50 steps removing. The frame approach reuses
-the force field's own relaxed hydrogen geometry. It is also EXACT rather than
-approximate here, because sidechains.py pins every chi angle: with chi fixed,
-each hydrogen's parent frame is genuinely rigid, so a rigid transform
-reproduces the reference geometry to machine precision.
-
-The frames are rigid by case:
-  * amide N of residue i>0: frame (N_i; CA_i, C_{i-1}). The peptide unit is
-    planar and omega is fixed trans, so H is rigid in it. Using an in-residue
-    third atom instead would make H depend on phi, which is WRONG.
-  * every other parent: frame atoms are taken from the SAME residue, never
-    the backbone O or OXT (O rotates with psi about the CA-C axis, so it is
-    not rigid relative to N). Everything else inside a residue -- N, CA, C,
-    CB and the whole fixed-chi sidechain -- is mutually rigid.
-
-REFERENCE HYDROGEN GEOMETRY is itself made reproducible across processes by
-seeding `random` immediately before addHydrogens AND forcing addHydrogens'
-internal relaxation onto the Reference platform, which is single-threaded and
-bit-deterministic. Measured: three builds bit-identical (max diff 0.0). With
-the default platform instead, builds differ by 0.0025 A, which the capped
-minimization amplifies into several kcal/mol.
-
---------------------------------------------------------------------------
-PLATFORM DETERMINISM
---------------------------------------------------------------------------
-'CPU' is requested explicitly, as required, to avoid a slow CUDA/OpenCL
-fallback. It is configured with Threads=1 and DeterministicForces=true.
-This is NOT optional: with default threading, repeated single-point energies
-on IDENTICAL positions drift by 4e-5 kcal/mol, and 50 L-BFGS steps amplify
-that to 0.13 kcal/mol -- eleven orders of magnitude above the 1e-12 the
-determinism test demands. At 138-218 atoms one thread is also no slower.
-
---------------------------------------------------------------------------
-CAPPED MINIMIZATION
---------------------------------------------------------------------------
-Ideal-geometry structures with fixed chi rotamers start with severe clashes
-(~1e8 kcal/mol for the all-helix chignolin), so a raw single-point energy is
-meaningless. 50 L-BFGS steps are run with harmonic position restraints on
-every backbone N, CA and C, so the bitstring -> structure mapping survives:
-measured CA-RMSD between pre- and post-minimization coordinates, WITHOUT
-superposition, is at most 0.21 A over both benchmark peptides.
-
-25 steps was measured and REJECTED: it leaves the all-helix chignolin at
-+59.1 kcal/mol, i.e. the clashes are not yet relieved, and max CA-RMSD rises
-to 0.50 A. 50 is the value used.
-
-The restraint is a CustomExternalForce whose strength is a global parameter.
-It is set to `restraint_k` for the minimization and then to ZERO before the
-energy is read, so the reported number is pure ff14SB + GBn2 with no
-restraint contamination.
-"""
 import math
 import random
 import time
@@ -148,31 +35,7 @@ _NON_FRAME_ATOMS = ("O", "OXT")
 
 
 class AmberHamiltonian:
-    """ff14SB + GBn2 energy over a discrete conformational representation.
 
-    Parameters
-    ----------
-    sequence, representation
-        As for FoldingHamiltonian.
-    weights
-        Accepted for interface compatibility and echoed on `.weights`, which
-        defaults to 1.0 for every Amber term. Amber terms are NOT free
-        parameters -- reweighting them stops the result being ff14SB -- so
-        this is here so that `main.py`'s breakdown printer keeps working, not
-        as a tuning knob.
-    restraint_k
-        Backbone position restraint, kcal/mol/A^2, in E = 1/2 k r^2.
-    minimization_steps
-        L-BFGS iteration cap. 50; 25 is not enough (see module docstring).
-    platform_name
-        'CPU' explicitly, per the design constraint.
-    reference_states
-        Representation state indices for the conformation used to build the
-        topology and calibrate hydrogens. Defaults to all-extended (state 1),
-        which is the least clashed conformation available and therefore the
-        cleanest one in which to relax reference hydrogens. The choice does
-        not affect E(x): only the frame-local hydrogen coefficients are kept.
-    """
 
     def __init__(self, sequence: str, representation,
                  weights: Optional[Dict[str, float]] = None,
@@ -313,7 +176,7 @@ class AmberHamiltonian:
                 adj.setdefault(i, []).append(j)
                 adj.setdefault(j, []).append(i)
         for k in adj:
-            adj[k].sort()          # index order == deterministic frame choice
+            adj[k].sort()         
         self._adj = adj
         self._hparent = parent
         missing = [h for h in self._hydrogens if h not in parent]
@@ -357,15 +220,14 @@ class AmberHamiltonian:
         self.system = self.forcefield.createSystem(
             self.topology,
             nonbondedMethod=app.NoCutoff,
-            constraints=None,          # H bonds must be free to minimize
+            constraints=None,      
             rigidWater=False,
             removeCMMotion=False,
             implicitSolventKappa=0.0 / unit.nanometer)   # zero salt
         for f in self.system.getForces():
             f.setForceGroup(_GROUP_OF.get(f.__class__.__name__, 5))
 
-        # E = 1/2 k r^2, k switched by a global parameter so the reported
-        # energy can be read with the restraint contributing exactly zero.
+
         rest = openmm.CustomExternalForce(
             "0.5*k_rest*((x-x0)^2+(y-y0)^2+(z-z0)^2)")
         rest.addGlobalParameter("k_rest", 0.0)
@@ -376,7 +238,6 @@ class AmberHamiltonian:
         rest.setForceGroup(_RESTRAINT_GROUP)
         self._rest_force = rest
         self.system.addForce(rest)
-        # kcal/mol/A^2 -> kJ/mol/nm^2
         self._k_rest_internal = self.restraint_k * KJ_PER_KCAL * 100.0
 
         self.platform = openmm.Platform.getPlatformByName(platform_name)
@@ -403,8 +264,6 @@ class AmberHamiltonian:
         for k, idx in enumerate(self._heavy_order):
             pos[idx] = heavy[k]
 
-        # A scratch System with every heavy mass set to zero: OpenMM's
-        # minimizer holds zero-mass particles fixed, so only hydrogens move.
         scratch = self.forcefield.createSystem(
             self.topology, nonbondedMethod=app.NoCutoff, constraints=None,
             rigidWater=False, removeCMMotion=False,
@@ -421,7 +280,6 @@ class AmberHamiltonian:
             .value_in_unit(unit.nanometer), dtype=float)
         del ctx
 
-        # (hydrogen, parent, frame a, frame b, coefficients in that frame)
         self._h_local: List[Tuple[int, int, int, int, np.ndarray]] = []
         for h in self._hydrogens:
             p = self._hparent[h]
@@ -432,9 +290,6 @@ class AmberHamiltonian:
                 (h, p, a, b,
                  np.array([np.dot(d, e1), np.dot(d, e2), np.dot(d, e3)])))
 
-    # ======================================================================
-    # per-evaluation geometry
-    # ======================================================================
     def _heavy_positions(self, backbone: Dict[str, np.ndarray]) -> np.ndarray:
         """Backbone dict -> (n_heavy, 3) nanometre array in topology order."""
         full = sc.build_full_structure(self.sequence, backbone)
@@ -472,7 +327,7 @@ class AmberHamiltonian:
         self.t_minimize += time.time() - t0
 
         t0 = time.time()
-        ctx.setParameter("k_rest", 0.0)     # restraint contributes exactly 0
+        ctx.setParameter("k_rest", 0.0)    
         state = ctx.getState(getEnergy=True, getPositions=want_positions)
         energy = state.getPotentialEnergy().value_in_unit(
             unit.kilocalorie_per_mole)
@@ -491,9 +346,7 @@ class AmberHamiltonian:
         self.t_energy += time.time() - t0
         return energy, comp, out_pos
 
-    # ======================================================================
-    # public interface
-    # ======================================================================
+
     def energy(self, bitstring: str) -> float:
         """E(x) in kcal/mol. Cached; hits do not count as energy evaluations."""
         if len(bitstring) != self.rep.n_bits:
@@ -524,28 +377,13 @@ class AmberHamiltonian:
 
     def energy_from_coords(self, coords: Dict[str, np.ndarray],
                            phi=None, psi=None) -> float:
-        """Energy of an arbitrary structure under the SAME Hamiltonian.
 
-        Used to score the native for the energy-gap metric. EVALUATION path,
-        not an optimization path. `coords` is a backbone dict with N, CA, C,
-        CB and O, as produced by geo.native_coords_from_pdb; sidechains are
-        rebuilt from it and the same capped minimization is applied, so the
-        native gets exactly the treatment a predicted structure gets.
-        `phi`/`psi` are accepted for interface compatibility and unused: the
-        force field reads coordinates, not torsions.
-        """
         heavy = self._heavy_positions(coords)
         e, _, _ = self._evaluate(heavy)
         return e
 
     def minimized_ca(self, bitstring: str) -> Tuple[np.ndarray, np.ndarray]:
-        """(pre, post) CA coordinates in ANGSTROMS around the minimization.
 
-        Diagnostic: lets validation check that the backbone restraints hold,
-        i.e. that the bitstring -> structure mapping survives. Returned in the
-        same lab frame, deliberately NOT superposed, so the RMSD between them
-        is the strict measure of how far minimization moved the backbone.
-        """
         heavy = self._heavy_positions(self.rep.build_coords(bitstring))
         pre = np.array([heavy[k] for k, (_, nm) in enumerate(self._heavy_names)
                         if nm == "CA"]) * 10.0
