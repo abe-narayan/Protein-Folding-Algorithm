@@ -11,6 +11,7 @@ import protein_geometry as geo
 import representations as reps
 import energy_terms as et
 import hamiltonian as ham
+import amber_hamiltonian as amber
 import vqe as vqe_mod
 import classical_baselines as cb
 import evaluation as ev
@@ -21,7 +22,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(BASE, "results")
 
 CSV_FIELDS = [
-    "protein", "sequence", "length", "method", "representation", "n_states",
+    "protein", "sequence", "length", "method", "representation", "energy_model","n_states",
     "n_qubits", "config_space", "seed", "layers", "alpha", "shots", "maxiter",
     "restarts", "optimizer",
     "vqe_energy", "vqe_modal_energy", "best_seen_energy", "native_energy",
@@ -67,18 +68,19 @@ def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
             n_states: int = 4, seed: int = 0,
             vqe_config: Optional[Dict] = None,
             method: str = "vqe",
+            energy_model: str = "legacy",
             sa_steps: Optional[int] = None,
             verbose: bool = True) -> Dict:
-    """Optimize one peptide with one method and one seed, then evaluate.
-
-    STRICT ORDERING: optimization runs first with the PDB log reset. The
-    native structure is loaded ONLY afterwards, for evaluation. An assertion
-    verifies zero PDB access during optimization.
-    """
+    
+    if energy_model not in ("legacy", "amber"):
+        raise ValueError(f"unknown energy_model {energy_model!r}")
     cfg = dict(default_vqe_config() if vqe_config is None else vqe_config)
     seq = entry.sequence
     rep = reps.make_representation(representation, len(seq), n_states=n_states)
-    H = ham.FoldingHamiltonian(seq, rep)
+    if energy_model == "amber":
+        H = amber.AmberHamiltonian(seq, rep)
+    else:
+        H = ham.FoldingHamiltonian(seq, rep)
 
     if verbose:
         d = rep.describe()
@@ -135,7 +137,7 @@ def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
     d = rep.describe()
     row = {
         "protein": entry.pdb_id, "sequence": seq, "length": len(seq),
-        "method": method, "representation": representation,
+        "method": method, "representation": representation, "energy_model": energy_model,
         "n_states": (n_states if representation == "torsion" else 4),
         "n_qubits": rep.n_qubits, "config_space": d["config_space"],
         "seed": seed,
@@ -177,10 +179,13 @@ def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
 def experiment_main_comparison(entries: List[ds.PeptideEntry],
                                seeds: List[int],
                                vqe_config: Optional[Dict] = None,
+                               energy_model: str = "legacy",
                                csv_name: str = "main_comparison.csv") -> List[Dict]:
 
     path = os.path.join(_ensure_results_dir(), csv_name)
     cfg = dict(default_vqe_config() if vqe_config is None else vqe_config)
+    if energy_model not in ("legacy", "amber"):
+        raise ValueError(f"unknown energy_model {energy_model!r}")
     rows = []
 
     arms = [
@@ -195,13 +200,18 @@ def experiment_main_comparison(entries: List[ds.PeptideEntry],
     print("=" * 72)
 
     for arm_name, rep_kind, n_states, method in arms:
+        if energy_model == "amber" and rep_kind == "lattice":
+            print(f"\n--- arm {arm_name} SKIPPED "
+                  f"(amber energy model has no lattice topology) ---")
+            continue
         print(f"\n--- arm {arm_name} ---")
         for entry in entries:
             for seed in seeds:
                 try:
                     row = run_one(entry, representation=rep_kind,
                                   n_states=n_states, seed=seed,
-                                  vqe_config=cfg, method=method)
+                                  vqe_config=cfg, method=method,
+                                  energy_model=energy_model)
                     row["method"] = arm_name
                     append_csv(path, row)
                     rows.append(row)

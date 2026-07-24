@@ -8,6 +8,7 @@ import protein_geometry as geo
 import representations as reps
 import energy_terms as et
 import hamiltonian as ham
+import amber_hamiltonian as amber
 import vqe as vqe_mod
 import dataset as ds
 import evaluation as ev
@@ -28,7 +29,10 @@ def cmd_predict(args) -> int:
     seq = args.sequence.strip().upper()
     rep = reps.make_representation(args.representation, len(seq),
                                    n_states=args.states)
-    H = ham.FoldingHamiltonian(seq, rep)
+    if args.energy_model == "amber":
+        H = amber.AmberHamiltonian(seq, rep)
+    else:
+        H = ham.FoldingHamiltonian(seq, rep)
     cfg = exp.default_vqe_config()
     cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
                maxiter=args.maxiter, restarts=args.restarts)
@@ -62,27 +66,31 @@ def cmd_predict(args) -> int:
     print(f"runtime                 : {res['runtime']:.1f} s")
 
     print()
-    print("energy breakdown (weighted contributions):")
-    comparisons = [("vqe", res["vqe_bitstring"])]
-    if not rep.is_lattice:
-        comparisons.append(("helix", rep.bitstring_from_states([0] * len(seq))))
-        comparisons.append(("extended", rep.bitstring_from_states([1] * len(seq))))
-    breakdowns = {name: H.components(b) for name, b in comparisons}
-    header = " ".join(f"{n:>12}" for n in breakdowns)
-    print(f"  {'term':<16} {'weight':>7} {header}")
-    for term in et.TERM_NAMES:
-        w = H.weights.get(term, 0.0)
-        vals = " ".join(f"{w * breakdowns[n][term]:>12.3f}" for n in breakdowns)
-        print(f"  {term:<16} {w:>7.2f} {vals}")
-    totals = " ".join(f"{H.energy(b):>12.3f}" for _, b in comparisons)
-    print(f"  {'TOTAL':<16} {'':>7} {totals}")
+    if args.energy_model == "legacy":
+        print("energy breakdown (weighted contributions):")
+        comparisons = [("vqe", res["vqe_bitstring"])]
+        if not rep.is_lattice:
+            comparisons.append(("helix", rep.bitstring_from_states([0] * len(seq))))
+            comparisons.append(("extended", rep.bitstring_from_states([1] * len(seq))))
+        breakdowns = {name: H.components(b) for name, b in comparisons}
+        header = " ".join(f"{n:>12}" for n in breakdowns)
+        print(f"  {'term':<16} {'weight':>7} {header}")
+        for term in et.TERM_NAMES:
+            w = H.weights.get(term, 0.0)
+            vals = " ".join(f"{w * breakdowns[n][term]:>12.3f}" for n in breakdowns)
+            print(f"  {term:<16} {w:>7.2f} {vals}")
+            totals = " ".join(f"{H.energy(b):>12.3f}" for _, b in comparisons)
+        print(f"  {'TOTAL':<16} {'':>7} {totals}")
+    else:
+        print("energy breakdown : skipped "
+              "(amber model has no 7-term weighted decomposition)")
 
 
     import os as _os
     _pdb_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "pdbs")
     _known = {"GYDPETGTWG": "1UAO"}
     _pdb_id = _known.get(seq)
-    if _pdb_id and not rep.is_lattice:
+    if _pdb_id and not rep.is_lattice and args.energy_model == "legacy":
         _pdb = _os.path.join(_pdb_dir, f"{_pdb_id}.pdb")
         if _os.path.exists(_pdb):
             try:
@@ -156,9 +164,9 @@ def cmd_main_comparison(args) -> int:
     cfg = exp.default_vqe_config()
     cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
                maxiter=args.maxiter, restarts=args.restarts)
-    exp.experiment_main_comparison(entries, args.seeds, vqe_config=cfg)
+    exp.experiment_main_comparison(entries, args.seeds, vqe_config=cfg,
+                                   energy_model=args.energy_model)
     return 0
-
 
 def cmd_energy_ablation(args) -> int:
     entries = ds.build_dataset(pdb_ids=args.proteins)
@@ -210,6 +218,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--representation", default="torsion",
                    choices=["torsion", "lattice"])
+    p.add_argument("--energy-model", default="legacy",
+                   choices=["legacy", "amber"])
     p.add_argument("--states", type=int, default=4, choices=[4, 8])
     p.add_argument("--layers", type=int, default=4)
     p.add_argument("--alpha", type=float, default=0.15)
