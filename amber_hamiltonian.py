@@ -18,9 +18,6 @@ __all__ = ["AmberHamiltonian", "KCAL_PER_KJ", "AMBER_TERMS"]
 KJ_PER_KCAL = 4.184
 KCAL_PER_KJ = 1.0 / KJ_PER_KCAL
 
-# force-group -> component name. LJ and Coulomb both live in NonbondedForce
-# and are not separable without re-deriving the reciprocal sum, so they are
-# reported together as "nonbonded" rather than split on a guess.
 AMBER_TERMS = ("bond", "angle", "torsion", "nonbonded", "solvation")
 _GROUP_OF = {"HarmonicBondForce": 1, "HarmonicAngleForce": 2,
              "PeriodicTorsionForce": 3, "CMAPTorsionForce": 3,
@@ -30,7 +27,6 @@ _TERM_GROUP = {"bond": 1, "angle": 2, "torsion": 3,
 _RESTRAINT_GROUP = 6
 
 RESTRAINED_BACKBONE = ("N", "CA", "C")
-# never usable as a frame reference: O rotates with psi, OXT with it.
 _NON_FRAME_ATOMS = ("O", "OXT")
 
 
@@ -63,10 +59,10 @@ class AmberHamiltonian:
 
         self._cache: Dict[str, float] = {}
         self._cache_limit = int(cache_limit)
-        self.n_energy_evaluations = 0   # cache MISSES only == real work
-        self.t_build = 0.0              # heavy atoms + hydrogen replay
-        self.t_minimize = 0.0           # restrained L-BFGS
-        self.t_energy = 0.0             # setParameter + getState readout
+        self.n_energy_evaluations = 0   
+        self.t_build = 0.0            
+        self.t_minimize = 0.0         
+        self.t_energy = 0.0            
 
         t0 = time.time()
         self._build_topology()
@@ -78,7 +74,6 @@ class AmberHamiltonian:
         if weights:
             self.weights.update(weights)
 
-    # -- properties ---------------------------------------------------------
     @property
     def n_qubits(self) -> int:
         return self.rep.n_qubits
@@ -87,11 +82,7 @@ class AmberHamiltonian:
     def n_bits(self) -> int:
         return self.rep.n_bits
 
-    # ======================================================================
-    # one-time construction
-    # ======================================================================
     def _reference_backbone(self) -> Dict[str, np.ndarray]:
-        """All-extended ideal backbone. Used only to seed the topology."""
         n = len(self.sequence)
         phi = np.full(n, math.radians(-120.0))
         psi = np.full(n, math.radians(130.0))
@@ -100,7 +91,6 @@ class AmberHamiltonian:
         return geo.build_backbone(phi, psi)
 
     def _build_topology(self) -> None:
-        """Topology + hydrogens, built ONCE. This is the only addHydrogens call."""
         seq = self.sequence
         ref = sc.build_full_structure(seq, self._reference_backbone())
 
@@ -128,8 +118,6 @@ class AmberHamiltonian:
 
         self.forcefield = app.ForceField("amber14/protein.ff14SB.xml",
                                          "implicit/gbn2.xml")
-        # Reference platform: single-threaded and bit-deterministic. Combined
-        # with the seed this makes addHydrogens reproducible across processes.
         self._reference_platform = openmm.Platform.getPlatformByName("Reference")
         random.seed(0)
         modeller = app.Modeller(top, np.array(positions) * unit.nanometer)
@@ -143,7 +131,6 @@ class AmberHamiltonian:
         self._index_topology()
 
     def _index_topology(self) -> None:
-        """Name/index maps, heavy-atom adjacency, and hydrogen parentage."""
         self._elem = {a.index: (a.element.symbol if a.element else "X")
                       for a in self.topology.atoms()}
         self._resof = {a.index: a.residue.index for a in self.topology.atoms()}
@@ -157,7 +144,6 @@ class AmberHamiltonian:
             else:
                 self._heavy_index[(a.residue.index, a.name)] = a.index
 
-        # position in the flat heavy array -> OpenMM atom index
         self._heavy_order = [self._heavy_index[k] for k in self._heavy_names]
         self._restraint_idx = [self._heavy_index[(i, nm)]
                                for i in range(len(self.sequence))
@@ -186,11 +172,8 @@ class AmberHamiltonian:
                 "topology; cannot build deterministic frames")
 
     def _frame_atoms(self, p: int) -> Tuple[int, int]:
-        """Two heavy atoms rigid with respect to `p`. See module docstring."""
         ri = self._resof[p]
         if self._nameof[p] == "N" and ri > 0:
-            # peptide plane: H is rigid against (N_i, CA_i, C_{i-1}), and
-            # NOT against any in-residue triple, because that depends on phi.
             return self._heavy_index[(ri, "CA")], self._heavy_index[(ri - 1, "C")]
         same = [q for q in self._adj.get(p, [])
                 if self._resof[q] == ri and self._nameof[q] not in _NON_FRAME_ATOMS]
@@ -208,7 +191,6 @@ class AmberHamiltonian:
 
     @staticmethod
     def _frame(p: np.ndarray, a: np.ndarray, b: np.ndarray):
-        """Right-handed orthonormal frame at p: e1 towards a, e2 in the pab plane."""
         e1 = a - p
         e1 = e1 / np.linalg.norm(e1)
         v = b - p
@@ -223,7 +205,7 @@ class AmberHamiltonian:
             constraints=None,      
             rigidWater=False,
             removeCMMotion=False,
-            implicitSolventKappa=0.0 / unit.nanometer)   # zero salt
+            implicitSolventKappa=0.0 / unit.nanometer) 
         for f in self.system.getForces():
             f.setForceGroup(_GROUP_OF.get(f.__class__.__name__, 5))
 
@@ -254,7 +236,6 @@ class AmberHamiltonian:
             self.platform, props)
 
     def _calibrate_hydrogens(self, reference_states) -> None:
-        """Relax hydrogens once against frozen heavy atoms, then freeze frames."""
         n = len(self.sequence)
         states = [1] * n if reference_states is None else list(reference_states)
         bits = self.rep.bitstring_from_states(states)
@@ -291,7 +272,6 @@ class AmberHamiltonian:
                  np.array([np.dot(d, e1), np.dot(d, e2), np.dot(d, e3)])))
 
     def _heavy_positions(self, backbone: Dict[str, np.ndarray]) -> np.ndarray:
-        """Backbone dict -> (n_heavy, 3) nanometre array in topology order."""
         full = sc.build_full_structure(self.sequence, backbone)
         out = np.empty((len(self._heavy_names), 3), dtype=float)
         for k, (i, nm) in enumerate(self._heavy_names):
@@ -299,7 +279,6 @@ class AmberHamiltonian:
         return out * 0.1
 
     def _assemble(self, heavy_nm: np.ndarray) -> np.ndarray:
-        """Heavy atoms + frame-replayed hydrogens -> full (n_atoms, 3) in nm."""
         pos = np.empty((self.n_atoms, 3), dtype=float)
         for k, idx in enumerate(self._heavy_order):
             pos[idx] = heavy_nm[k]
@@ -310,7 +289,6 @@ class AmberHamiltonian:
 
     def _evaluate(self, heavy_nm: np.ndarray, want_components: bool = False,
                   want_positions: bool = False):
-        """The single energy path. Everything else routes through here."""
         t0 = time.time()
         pos = self._assemble(heavy_nm)
         self.t_build += time.time() - t0
@@ -348,7 +326,6 @@ class AmberHamiltonian:
 
 
     def energy(self, bitstring: str) -> float:
-        """E(x) in kcal/mol. Cached; hits do not count as energy evaluations."""
         if len(bitstring) != self.rep.n_bits:
             raise ValueError(
                 f"bitstring length {len(bitstring)} != n_bits {self.rep.n_bits}")
@@ -363,10 +340,7 @@ class AmberHamiltonian:
         return e
 
     def components(self, bitstring: str) -> Dict[str, float]:
-        """Per-term breakdown for one bitstring, kcal/mol. Not cached.
 
-        The five Amber terms sum to "total" exactly; there is no residual.
-        """
         if len(bitstring) != self.rep.n_bits:
             raise ValueError(
                 f"bitstring length {len(bitstring)} != n_bits {self.rep.n_bits}")
