@@ -6,6 +6,7 @@ otherwise have to be taken on trust.
 """
 import inspect
 import math
+import os
 from typing import Dict, List
 
 import numpy as np
@@ -15,6 +16,7 @@ import representations as reps
 import sidechains as sc
 import energy_terms as et
 import hamiltonian as ham
+import amber_hamiltonian as amb
 import vqe as vqe_mod
 import classical_baselines as cb
 import evaluation as ev
@@ -628,6 +630,152 @@ def test_sidechain_atom_counts() -> bool:
 
 
 
+# ==========================================================================
+# Amber ff14SB + GBn2 Hamiltonian
+#
+# Building the topology and relaxing the reference hydrogens costs ~0.5 s and
+# each unique structure costs ~130 ms, so the Hamiltonian is built once and
+# shared across these tests. The native structure is parsed lazily and kept
+# separate, so the leakage audit can reset the PDB log without racing it.
+# ==========================================================================
+_AMBER_SEQ = "GYDPETGTWG"           # chignolin, 1UAO
+_AMBER_CACHE = {}
+
+
+def _amber_pdb_path(pdb_id: str) -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "pdbs", f"{pdb_id}.pdb")
+
+
+def _amber_hamiltonian():
+    """Shared AmberHamiltonian for chignolin. Built at most once per session."""
+    if "H" not in _AMBER_CACHE:
+        rep = reps.TorsionStateRepresentation(len(_AMBER_SEQ), n_states=4)
+        _AMBER_CACHE["rep"] = rep
+        _AMBER_CACHE["H"] = amb.AmberHamiltonian(_AMBER_SEQ, rep)
+    return _AMBER_CACHE["H"], _AMBER_CACHE["rep"]
+
+
+def _amber_native():
+    """Native chignolin coords. Reads a PDB -- never called from .energy()."""
+    if "native" not in _AMBER_CACHE:
+        _AMBER_CACHE["native"] = geo.native_coords_from_pdb(
+            _amber_pdb_path("1UAO"))
+    return _AMBER_CACHE["native"]
+
+
+def test_amber_energy_is_deterministic() -> bool:
+    """THE hydrogen-determinism test.
+
+    Modeller.addHydrogens places hydrogens at literal random positions, which
+    on Day 1 produced 48.9 kcal/mol of spread across identical runs. The whole
+    design of AmberHamiltonian -- topology built once, hydrogens frozen into
+    rigid local frames, CPU platform pinned to one thread -- exists to make
+    E(x) a pure function of the bitstring. Anything above 1e-12 means that
+    guarantee is broken and every energy comparison downstream is noise.
+    """
+    H, rep = _amber_hamiltonian()
+    rng = np.random.default_rng(3)
+    worst = 0.0
+    for bits in ([rep.bitstring_from_states([0] * len(_AMBER_SEQ))]
+                 + [rep.random_bitstring(rng) for _ in range(2)]):
+        vals = []
+        for _ in range(5):
+            H._cache.clear()
+            vals.append(H.energy(bits))
+        if not all(math.isfinite(v) for v in vals):
+            return _report("Amber energy deterministic to 1e-12", False,
+                           "non-finite energy")
+        worst = max(worst, max(vals) - min(vals))
+    ok = worst < 1e-12
+    return _report("Amber energy deterministic to 1e-12", ok,
+                   f"max spread {worst:.3e} kcal/mol over 5 evaluations "
+                   f"of each of 3 bitstrings")
+
+
+def test_amber_native_below_helix() -> bool:
+    """GO/NO-GO GATE. The native fold must score below a generic all-helix.
+
+    This is the check the hand-weighted energy failed: it ranked native
+    chignolin at +5.51 while returning structures at -2.17. If Amber cannot
+    clear this bar there is no point optimizing against it.
+    """
+    H, rep = _amber_hamiltonian()
+    _, coords, phi, psi = _amber_native()
+    e_native = H.energy_from_coords(coords, phi, psi)
+    e_helix = H.energy(rep.bitstring_from_states([0] * len(_AMBER_SEQ)))
+    ok = e_native < e_helix
+    return _report("native chignolin scores below all-helix", ok,
+                   f"native {e_native:.2f} vs helix {e_helix:.2f} kcal/mol "
+                   f"(gap {e_native - e_helix:.2f})")
+
+
+def test_amber_backbone_restraints_hold() -> bool:
+    """The capped minimization must not destroy the bitstring -> structure map.
+
+    Restraints are on backbone N, CA and C, so the CA trace is compared in the
+    LAB FRAME with no superposition -- the strict form of the test. If this
+    drifts, two different bitstrings can relax into the same structure and the
+    energy stops being a function of the encoding.
+    """
+    H, rep = _amber_hamiltonian()
+    rng = np.random.default_rng(11)
+    worst, where = 0.0, ""
+    for bits in ([rep.bitstring_from_states([0] * len(_AMBER_SEQ))]
+                 + [rep.random_bitstring(rng) for _ in range(3)]):
+        pre, post = H.minimized_ca(bits)
+        d = geo.rmsd(pre, post)
+        if d > worst:
+            worst, where = d, bits
+    ok = worst < 0.5
+    return _report("backbone restraints survive minimization", ok,
+                   f"max CA-RMSD pre->post {worst:.3f} A over 4 structures "
+                   f"(worst {where})")
+
+
+def test_amber_rejects_wrong_length() -> bool:
+    H, rep = _amber_hamiltonian()
+    ok = True
+    detail = []
+    for bad in ("0" * (rep.n_bits + 2), "0" * (rep.n_bits - 1), ""):
+        try:
+            H.energy(bad)
+            ok = False
+            detail.append(f"len {len(bad)} accepted")
+        except ValueError:
+            pass
+    return _report("Amber energy rejects wrong-length bitstring", ok,
+                   "; ".join(detail) if detail else
+                   "too long, too short and empty all raise ValueError")
+
+
+def test_amber_no_pdb_access_during_energy() -> bool:
+    """LEAKAGE AUDIT for the new Hamiltonian.
+
+    AmberHamiltonian builds a topology, adds hydrogens and minimizes, which is
+    a lot more machinery than the old energy had -- and OpenMM is perfectly
+    capable of reading a PDB. This proves none of that machinery reaches a
+    native structure. The Hamiltonian is constructed INSIDE the audited window
+    so that __init__ is covered too, not just .energy().
+    """
+    rep = reps.TorsionStateRepresentation(len(_AMBER_SEQ), n_states=4)
+    geo.reset_pdb_log()
+    H = amb.AmberHamiltonian(_AMBER_SEQ, rep)
+    rng = np.random.default_rng(0)
+    for _ in range(3):
+        H.energy(rep.random_bitstring(rng))
+    H.components(rep.bitstring_from_states([0] * len(_AMBER_SEQ)))
+    log = geo.get_pdb_log()
+    params = set(inspect.signature(amb.AmberHamiltonian.__init__).parameters)
+    forbidden = {"pdb", "pdb_path", "native", "native_coords", "coords",
+                 "entry", "structure", "target"}
+    leaked = params & forbidden
+    ok = (len(log) == 0) and not leaked
+    return _report("no PDB access during Amber construction or .energy()", ok,
+                   f"{len(log)} PDB reads, no native args in signature")
+
+
+
 def run_all() -> bool:
     print("=" * 72)
     print("VALIDATION SUITE")
@@ -663,6 +811,11 @@ def run_all() -> bool:
         test_sidechain_chirality,
         test_sidechain_rejects_unimplemented_residue,
         test_sidechain_atom_counts,
+        test_amber_energy_is_deterministic,
+        test_amber_native_below_helix,
+        test_amber_backbone_restraints_hold,
+        test_amber_rejects_wrong_length,
+        test_amber_no_pdb_access_during_energy,
     ]
 
     results = []
