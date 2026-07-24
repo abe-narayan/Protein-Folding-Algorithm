@@ -4,7 +4,6 @@ import sys
 from typing import List
 
 import numpy as np
-import numpy as _np
 import protein_geometry as geo
 import representations as reps
 import energy_terms as et
@@ -40,7 +39,7 @@ def cmd_predict(args) -> int:
     print(f"qubits          : {rep.n_qubits}")
     print(f"config space    : {d['config_space']:.4g}")
     print(f"statevector mem : {(2 ** rep.n_qubits) * 16 / 1e6:.1f} MB")
-    print()
+    print("")
 
     geo.reset_pdb_log()
     res = vqe_mod.run_global_cvar_vqe(H, seed=args.seed, verbose=True, **cfg)
@@ -75,7 +74,7 @@ def cmd_predict(args) -> int:
         w = H.weights.get(term, 0.0)
         vals = " ".join(f"{w * breakdowns[n][term]:>12.3f}" for n in breakdowns)
         print(f"  {term:<16} {w:>7.2f} {vals}")
-        totals = " ".join(f"{H.energy(b):>12.3f}" for _, b in comparisons)
+    totals = " ".join(f"{H.energy(b):>12.3f}" for _, b in comparisons)
     print(f"  {'TOTAL':<16} {'':>7} {totals}")
 
 
@@ -114,7 +113,7 @@ def cmd_predict(args) -> int:
                               f"{_q:>8.1f} {_pen:>9.3f}")
 
 
-                    _nCB = _np.asarray(_ncoords["CB"], dtype=float)
+                    _nCB = np.asarray(_ncoords["CB"], dtype=float)
                     _kd, _q_, _mj = et.sequence_arrays(seq, True)
                     print()
                     print("  native contact pairs (|i-j| >= 3), "
@@ -124,8 +123,8 @@ def cmd_predict(args) -> int:
                     _pairs = []
                     for _a in range(len(seq)):
                         for _b in range(_a + 3, len(seq)):
-                            _d = float(_np.linalg.norm(_nCB[_a] - _nCB[_b]))
-                            _s = float(et.switch(_np.array([_d]), 4.5, 8.5)[0])
+                            _d = float(np.linalg.norm(_nCB[_a] - _nCB[_b]))
+                            _s = float(et.switch(np.array([_d]), 4.5, 8.5)[0])
                             _m = float(_mj[_a, _b])
                             _pairs.append((_d, _a, _b, _s, _m))
                     _pairs.sort()
