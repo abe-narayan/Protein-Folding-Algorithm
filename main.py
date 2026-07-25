@@ -79,7 +79,7 @@ def cmd_predict(args) -> int:
             w = H.weights.get(term, 0.0)
             vals = " ".join(f"{w * breakdowns[n][term]:>12.3f}" for n in breakdowns)
             print(f"  {term:<16} {w:>7.2f} {vals}")
-            totals = " ".join(f"{H.energy(b):>12.3f}" for _, b in comparisons)
+        totals = " ".join(f"{H.energy(b):>12.3f}" for _, b in comparisons)
         print(f"  {'TOTAL':<16} {'':>7} {totals}")
     else:
         print("energy breakdown : skipped "
