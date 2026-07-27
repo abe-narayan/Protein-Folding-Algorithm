@@ -1,4 +1,3 @@
-
 import csv
 import json
 import os
@@ -71,7 +70,7 @@ def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
             energy_model: str = "legacy",
             sa_steps: Optional[int] = None,
             verbose: bool = True) -> Dict:
-    
+
     if energy_model not in ("legacy", "amber"):
         raise ValueError(f"unknown energy_model {energy_model!r}")
     cfg = dict(default_vqe_config() if vqe_config is None else vqe_config)
@@ -338,7 +337,7 @@ def experiment_energy_ablation(entries: List[ds.PeptideEntry],
 
 def experiment_vqe_hyperparameters(entry: ds.PeptideEntry, seeds: List[int],
                                    csv_name: str = "vqe_hparams.csv") -> List[Dict]:
- 
+
     path = os.path.join(_ensure_results_dir(), csv_name)
     rows = []
     print("=" * 72)
@@ -412,101 +411,6 @@ def experiment_scaling_report(max_length: int = 22,
     print("  reach N = 20 globally; block decomposition would reach it only")
     print("  by abandoning the global-VQE requirement.")
     return out
-
-
-def experiment_prior_ablation(entries: List[ds.PeptideEntry], seeds: List[int],
-                              vqe_config: Optional[Dict] = None,
-                              csv_name: str = "prior_ablation.csv") -> List[Dict]:
-
-    import priors
-
-    path = os.path.join(_ensure_results_dir(), csv_name)
-    cfg = dict(default_vqe_config() if vqe_config is None else vqe_config)
-    rows = []
-    prior_model = priors.SequencePrior(prefer_esm=True)
-    print("=" * 72)
-    print("EXPERIMENT 5: SEQUENCE-PRIOR ABLATION (non-default)")
-    print(f"  prior mode: {prior_model.info()['mode']} "
-          f"-- {prior_model.info()['description']}")
-    print("=" * 72)
-
-    class PriorHamiltonian(ham.FoldingHamiltonian):
-        def __init__(self, sequence, representation, contact_prob,
-                     prior_weight=2.0, **kw):
-            super().__init__(sequence, representation, **kw)
-            self.contact_prob = contact_prob
-            self.prior_weight = float(prior_weight)
-
-        def energy(self, bitstring):
-            hit = self._cache.get(bitstring)
-            if hit is not None:
-                return hit
-            base_comp = self.components(bitstring)
-            e = (et.total_from_components(base_comp, self.weights)
-                 + base_comp["backtracking"])
-            cb_ = self.rep.build_coords(bitstring).get("CB")
-            e += self.prior_weight * priors.contact_violation_energy(
-                self.contact_prob, np.asarray(cb_, dtype=float))
-            if len(self._cache) < self._cache_limit:
-                self._cache[bitstring] = e
-            self.n_energy_evaluations += 1
-            return e
-
-    for entry in entries:
-        cp = prior_model.contact_probabilities(entry.sequence)
-        for seed in seeds:
-            rep = reps.TorsionStateRepresentation(len(entry.sequence), 4)
-            H = PriorHamiltonian(entry.sequence, rep, cp)
-            geo.reset_pdb_log()
-            t0 = time.time()
-            res = vqe_mod.run_global_cvar_vqe(H, seed=seed, **cfg)
-            rt = time.time() - t0
-            assert len(geo.get_pdb_log()) == 0, "LEAKAGE during prior ablation"
-            nseq, ncoords, nphi, npsi = ds.load_native(entry)
-            m = ev.evaluate_structure(res["vqe_bitstring"], rep, H,
-                                      nseq, ncoords, nphi, npsi)
-            ceil_ = ev.representation_ceiling(rep, ncoords["CA"], nphi, npsi)
-            row = {
-                "protein": entry.pdb_id, "sequence": entry.sequence,
-                "length": len(entry.sequence),
-                "method": f"prior_{prior_model.info()['mode']}",
-                "representation": "torsion", "n_states": 4,
-                "n_qubits": rep.n_qubits,
-                "config_space": 4.0 ** len(entry.sequence), "seed": seed,
-                "layers": cfg["layers"], "alpha": cfg["alpha"],
-                "shots": cfg["shots"], "maxiter": cfg["maxiter"],
-                "restarts": cfg["restarts"], "optimizer": cfg["optimizer"],
-                "vqe_energy": res["vqe_energy"],
-                "vqe_modal_energy": res["vqe_modal_energy"],
-                "best_seen_energy": res["best_seen_energy"],
-                "native_energy": m["native_energy"],
-                "energy_gap": m["energy_gap_pred_minus_native"],
-                "ca_rmsd_angstrom": m["ca_rmsd_angstrom"],
-                "backbone_rmsd_angstrom": m["backbone_rmsd_angstrom"],
-                "ceiling_ca_rmsd": ceil_["ceiling_ca_rmsd"],
-                "contact_f1": m["contact_f1"],
-                "longrange_contact_recall": m["longrange_contact_recall"],
-                "ss_agreement": m["ss_agreement"],
-                "ss_predicted": m["ss_predicted"],
-                "ss_native": geo.assign_secondary_structure(ncoords),
-                "n_energy_evaluations": res["n_energy_evaluations"],
-                "n_objective_evals": res["n_objective_evals_total"],
-                "runtime": rt,
-                "distribution_top1_prob": res["distribution_top1_prob"],
-                "distribution_entropy_bits": res["distribution_entropy_bits"],
-                "vqe_bitstring": res["vqe_bitstring"],
-                "best_seen_bitstring": res["best_seen_bitstring"],
-            }
-            append_csv(path, row)
-            rows.append(row)
-            print(f"    {entry.pdb_id} seed {seed}: "
-                  f"RMSD {row['ca_rmsd_angstrom']:.2f} A")
-
-    _print_summary(rows)
-    print(f"\n  results written to {path}")
-    print("  NOTE: these numbers are prior-assisted and must be reported")
-    print("  separately from the default (no-prior) results.")
-    return rows
 
 
 def save_prediction(entry: ds.PeptideEntry, bitstring: str, rep,

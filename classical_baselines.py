@@ -1,7 +1,6 @@
-
 import math
 import time
-from typing import Dict, Optional
+from typing import Dict
 
 import numpy as np
 

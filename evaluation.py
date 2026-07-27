@@ -1,11 +1,9 @@
-
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import math
 import numpy as np
 
 import protein_geometry as geo
-import representations as reps
 
 
 def representation_ceiling(rep, native_ca: np.ndarray,
@@ -78,7 +76,7 @@ def evaluate_structure(bitstring: str, rep, hamiltonian,
     ca_r = geo.ca_rmsd(pred_ca, nat_ca, allow_scale=is_lat)
 
     if is_lat:
-        bb_r = float("nan")   
+        bb_r = float("nan")
         ss_pred = "unavailable"
         ss_agree = float("nan")
         pred_cb_scaled, scale = geo.kabsch_superpose_with_scale(pred_cb, nat_cb)

@@ -1,7 +1,6 @@
-
 import math
 import time
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 import pennylane as qml
@@ -114,7 +113,7 @@ def _run_single(hamiltonian, circuit, n_qubits: int, layers: int,
 
         idx = rng.choice(probs.size, size=shots, p=probs)
 
- 
+
         uniq, inverse = np.unique(idx, return_inverse=True)
         uniq_energies = np.empty(uniq.size, dtype=float)
         for m, u in enumerate(uniq):

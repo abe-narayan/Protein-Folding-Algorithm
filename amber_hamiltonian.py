@@ -40,7 +40,8 @@ class AmberHamiltonian:
                  minimization_tolerance: float = 2.0,
                  cache_limit: int = 500_000,
                  platform_name: str = "CPU",
-                 reference_states: Optional[Sequence[int]] = None):
+                 reference_states: Optional[Sequence[int]] = None,
+                 collapse_floor: float = -600.0):
         self.sequence = sequence.strip().upper()
         self.rep = representation
         if len(self.sequence) != self.rep.n_residues:
@@ -56,13 +57,14 @@ class AmberHamiltonian:
         self.restraint_k = float(restraint_k)
         self.minimization_steps = int(minimization_steps)
         self.minimization_tolerance = float(minimization_tolerance)
+        self.collapse_floor = float(collapse_floor)
 
         self._cache: Dict[str, float] = {}
         self._cache_limit = int(cache_limit)
-        self.n_energy_evaluations = 0   
-        self.t_build = 0.0            
-        self.t_minimize = 0.0         
-        self.t_energy = 0.0            
+        self.n_energy_evaluations = 0
+        self.t_build = 0.0
+        self.t_minimize = 0.0
+        self.t_energy = 0.0
 
         t0 = time.time()
         self._build_topology()
@@ -162,7 +164,7 @@ class AmberHamiltonian:
                 adj.setdefault(i, []).append(j)
                 adj.setdefault(j, []).append(i)
         for k in adj:
-            adj[k].sort()         
+            adj[k].sort()
         self._adj = adj
         self._hparent = parent
         missing = [h for h in self._hydrogens if h not in parent]
@@ -202,10 +204,10 @@ class AmberHamiltonian:
         self.system = self.forcefield.createSystem(
             self.topology,
             nonbondedMethod=app.NoCutoff,
-            constraints=None,      
+            constraints=None,
             rigidWater=False,
             removeCMMotion=False,
-            implicitSolventKappa=0.0 / unit.nanometer) 
+            implicitSolventKappa=0.0 / unit.nanometer)
         for f in self.system.getForces():
             f.setForceGroup(_GROUP_OF.get(f.__class__.__name__, 5))
 
@@ -305,10 +307,15 @@ class AmberHamiltonian:
         self.t_minimize += time.time() - t0
 
         t0 = time.time()
-        ctx.setParameter("k_rest", 0.0)    
+        ctx.setParameter("k_rest", 0.0)
         state = ctx.getState(getEnergy=True, getPositions=want_positions)
         energy = state.getPotentialEnergy().value_in_unit(
             unit.kilocalorie_per_mole)
+        if energy < self.collapse_floor:
+            # GB Coulomb-collapse artifact (physical minima are ~ -350..-390;
+            # collapses are < -10000). Return +inf so CVaR / best-seen can never
+            # select it. Applied uniformly to native and predicted structures.
+            energy = float("inf")
         comp = None
         if want_components:
             comp = {}
@@ -382,6 +389,7 @@ class AmberHamiltonian:
             "platform": self.platform.getName(),
             "platform_properties": dict(self.platform_properties),
             "restraint_k_kcal_per_mol_A2": self.restraint_k,
+            "collapse_floor_kcal": self.collapse_floor,
             "minimization_steps": self.minimization_steps,
             "hydrogen_strategy": "frozen local frames (relaxed once)",
             "setup_time_s": self.setup_time,

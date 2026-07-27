@@ -1,6 +1,5 @@
-
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
@@ -84,15 +83,15 @@ WEIGHT_ORIGIN = {
 
 
 _RAMA_BASINS = [
-    (-63.0, -42.0, 28.0, 1.00),   
-    (-120.0, 130.0, 40.0, 0.90), 
-    (-75.0, 145.0, 40.0, 0.75),  
-    (-85.0, 100.0, 32.0, 0.70),   
-    (-100.0, -15.0, 30.0, 0.45), 
-    (75.0, 35.0, 30.0, 0.40),     
+    (-63.0, -42.0, 28.0, 1.00),
+    (-120.0, 130.0, 40.0, 0.90),
+    (-75.0, 145.0, 40.0, 0.75),
+    (-85.0, 100.0, 32.0, 0.70),
+    (-100.0, -15.0, 30.0, 0.45),
+    (75.0, 35.0, 30.0, 0.40),
 ]
-_HELIX_FORMERS = set("AELMQKRH")  
-_SHEET_FORMERS = set("VIFYTWC")   
+_HELIX_FORMERS = set("AELMQKRH")
+_SHEET_FORMERS = set("VIFYTWC")
 
 
 def _ang_diff(a: float, b: float) -> float:
@@ -111,7 +110,7 @@ def rama_penalty(aa: str, phi_rad: float, psi_rad: float) -> float:
         if k == 1 and aa in _SHEET_FORMERS:
             w += 0.5
         if k == 3 and aa != "G":
-            w *= 0.2        
+            w *= 0.2
         score += w * math.exp(-d2 / (2.0 * sig * sig))
     e = 1.0 - score
     if aa == "P":
@@ -222,7 +221,7 @@ def hbond_terms(coords: Dict[str, np.ndarray],
 
         e = float(energies[k]) + desolvation_cost
         if e >= 0.0:
-            continue        
+            continue
         if abs(i - j) < 5:
             local += e
         else:
@@ -299,8 +298,8 @@ def energy_components(sequence: str,
         "contact": contact_term(mj, sep, di, dj, d_cb),
 
         "hbond": (hb_local + hb_lr) / max(1, n),
-        "hbond_local": hb_local,         
-        "hbond_longrange": hb_lr,       
+        "hbond_local": hb_local,
+        "hbond_longrange": hb_lr,
         "solvation": solvation_term(kd, CB),
         "electrostatic": electrostatic_term(q, sep, di, dj, d_cb),
         "torsion": (0.0 if phi is None

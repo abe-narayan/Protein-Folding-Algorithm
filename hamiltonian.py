@@ -1,4 +1,3 @@
-
 from typing import Dict, Optional
 
 import numpy as np
@@ -24,7 +23,7 @@ class FoldingHamiltonian:
         self.backtracking_penalty = float(backtracking_penalty)
         self._cache: Dict[str, float] = {}
         self._cache_limit = int(cache_limit)
-        self.n_energy_evaluations = 0  
+        self.n_energy_evaluations = 0
 
     @property
     def n_qubits(self) -> int:

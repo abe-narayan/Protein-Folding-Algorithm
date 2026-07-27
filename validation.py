@@ -1,8 +1,6 @@
-
 import inspect
 import math
 import os
-from typing import Dict, List
 
 import numpy as np
 
@@ -286,7 +284,7 @@ def test_no_normalized_rmsd_path() -> bool:
 
 def test_vqe_matches_exhaustive_on_tiny_system() -> bool:
 
-    seq = "AEKAAG"        
+    seq = "AEKAAG"
     r = reps.TorsionStateRepresentation(len(seq), n_states=4)
     H = ham.FoldingHamiltonian(seq, r)
     exact = cb.exhaustive_search(H, max_bits=14)
@@ -540,7 +538,7 @@ def test_sidechain_atom_counts() -> bool:
 
 
 
-_AMBER_SEQ = "GYDPETGTWG"         
+_AMBER_SEQ = "GYDPETGTWG"
 _AMBER_CACHE = {}
 
 

@@ -1,7 +1,8 @@
-numpy>=1.23,<2.0
+numpy>=1.23
 scipy>=1.10
 pennylane>=0.35
 pennylane-lightning>=0.35
+quimb>=1.14
 biopython>=1.80
 matplotlib>=3.6
 openmm>=8.0

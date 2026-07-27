@@ -1,4 +1,3 @@
-
 import os
 import sys
 
@@ -12,9 +11,7 @@ import vqe as vqe_mod
 import evaluation as ev
 
 
-SEQ = (sys.argv[1] if len(sys.argv) > 1 else "GYDPETGTWG").strip().upper()
 KNOWN = {"GYDPETGTWG": "1UAO", "SWTWEGNKWTWK": "1LE0"}
-PDB_ID = KNOWN.get(SEQ)
 
 COLOR_MAP = {
     **{aa: "red" for aa in "AVLIMFWC"},      # hydrophobic
@@ -49,56 +46,63 @@ def plot_chain(coords, sequence, title, path):
     return fig
 
 
-rep = reps.TorsionStateRepresentation(len(SEQ), n_states=4)
-H = ham.FoldingHamiltonian(SEQ, rep)
+def main(seq: str) -> None:
+    seq = seq.strip().upper()
+    pdb_id = KNOWN.get(seq)
+    rep = reps.TorsionStateRepresentation(len(seq), n_states=4)
+    H = ham.FoldingHamiltonian(seq, rep)
 
-print(f"sequence : {SEQ}  (N = {len(SEQ)}, {rep.n_qubits} qubits)")
-geo.reset_pdb_log()
-res = vqe_mod.run_global_cvar_vqe(H, layers=2, alpha=0.15, shots=1024,
-                                  maxiter=150, restarts=1, seed=0,
-                                  final_shots=4096, verbose=True)
-assert len(geo.get_pdb_log()) == 0, "LEAKAGE: PDB read during optimization"
+    print(f"sequence : {seq}  (N = {len(seq)}, {rep.n_qubits} qubits)")
+    geo.reset_pdb_log()
+    res = vqe_mod.run_global_cvar_vqe(H, layers=2, alpha=0.15, shots=1024,
+                                      maxiter=150, restarts=1, seed=0,
+                                      final_shots=4096, verbose=True)
+    assert len(geo.get_pdb_log()) == 0, "LEAKAGE: PDB read during optimization"
 
-pred_ca = rep.build_coords(res["vqe_bitstring"])["CA"]
-print(f"\nVQE energy : {res['vqe_energy']:.4f}")
-print(f"bitstring  : {res['vqe_bitstring']}")
+    pred_ca = rep.build_coords(res["vqe_bitstring"])["CA"]
+    print(f"\nVQE energy : {res['vqe_energy']:.4f}")
+    print(f"bitstring  : {res['vqe_bitstring']}")
 
-os.makedirs("results", exist_ok=True)
+    os.makedirs("results", exist_ok=True)
 
-native_ca = None
-if PDB_ID:
-    pdb_path = os.path.join("pdbs", f"{PDB_ID}.pdb")
-    if os.path.exists(pdb_path):
-        nseq, ncoords, nphi, npsi = geo.native_coords_from_pdb(pdb_path)
-        native_ca = np.asarray(ncoords["CA"])[:len(SEQ)]
-        pred_ca = geo.kabsch_superpose(pred_ca, native_ca)
-        r = geo.rmsd(pred_ca, native_ca)
-        ceil_ = ev.representation_ceiling(rep, native_ca, nphi, npsi, seed=0)
-        e_nat = H.energy_from_coords(ncoords, nphi, npsi)
-        print(f"CA-RMSD    : {r:.2f} A   (ceiling {ceil_['ceiling_ca_rmsd']:.2f} A)")
-        print(f"native E   : {e_nat:.4f}   gap {res['vqe_energy'] - e_nat:+.4f}")
-        pred_title = (f"VQE prediction for '{SEQ}'\n"
-                      f"CA-RMSD to {PDB_ID}: {r:.2f} A  |  "
-                      f"E = {res['vqe_energy']:.2f}")
+    native_ca = None
+    if pdb_id:
+        pdb_path = os.path.join("pdbs", f"{pdb_id}.pdb")
+        if os.path.exists(pdb_path):
+            nseq, ncoords, nphi, npsi = geo.native_coords_from_pdb(pdb_path)
+            native_ca = np.asarray(ncoords["CA"])[:len(seq)]
+            pred_ca = geo.kabsch_superpose(pred_ca, native_ca)
+            r = geo.rmsd(pred_ca, native_ca)
+            ceil_ = ev.representation_ceiling(rep, native_ca, nphi, npsi, seed=0)
+            e_nat = H.energy_from_coords(ncoords, nphi, npsi)
+            print(f"CA-RMSD    : {r:.2f} A   (ceiling {ceil_['ceiling_ca_rmsd']:.2f} A)")
+            print(f"native E   : {e_nat:.4f}   gap {res['vqe_energy'] - e_nat:+.4f}")
+            pred_title = (f"VQE prediction for '{seq}'\n"
+                          f"CA-RMSD to {pdb_id}: {r:.2f} A  |  "
+                          f"E = {res['vqe_energy']:.2f}")
+        else:
+            print(f"  [{pdb_id}.pdb not found in pdbs/ -- prediction only]")
+            pred_title = f"VQE prediction for '{seq}'  (E = {res['vqe_energy']:.2f})"
     else:
-        print(f"  [{PDB_ID}.pdb not found in pdbs/ -- prediction only]")
-        pred_title = f"VQE prediction for '{SEQ}'  (E = {res['vqe_energy']:.2f})"
-else:
-    pred_title = f"VQE prediction for '{SEQ}'  (E = {res['vqe_energy']:.2f})"
+        pred_title = f"VQE prediction for '{seq}'  (E = {res['vqe_energy']:.2f})"
 
-print()
-plot_chain(pred_ca, SEQ, pred_title,
-           os.path.join("results", f"{SEQ}_vqe_fold.png"))
+    print()
+    plot_chain(pred_ca, seq, pred_title,
+               os.path.join("results", f"{seq}_vqe_fold.png"))
 
-if native_ca is not None:
-    plot_chain(native_ca, SEQ,
-               f"Experimental structure ({PDB_ID}) for '{SEQ}'",
-               os.path.join("results", f"{SEQ}_native_{PDB_ID}.png"))
+    if native_ca is not None:
+        plot_chain(native_ca, seq,
+                   f"Experimental structure ({pdb_id}) for '{seq}'",
+                   os.path.join("results", f"{seq}_native_{pdb_id}.png"))
 
-geo.write_pdb(os.path.join("results", f"{SEQ}_prediction.pdb"),
-              SEQ, rep.build_coords(res["vqe_bitstring"]),
-              remark=f"global CVaR-VQE prediction for {SEQ}")
-print(f"  saved results/{SEQ}_prediction.pdb")
+    geo.write_pdb(os.path.join("results", f"{seq}_prediction.pdb"),
+                  seq, rep.build_coords(res["vqe_bitstring"]),
+                  remark=f"global CVaR-VQE prediction for {seq}")
+    print(f"  saved results/{seq}_prediction.pdb")
 
-if os.environ.get("SHOW_PLOTS", "1") != "0":
-    plt.show()
+    if os.environ.get("SHOW_PLOTS", "1") != "0":
+        plt.show()
+
+
+if __name__ == "__main__":
+    main(sys.argv[1] if len(sys.argv) > 1 else "GYDPETGTWG")

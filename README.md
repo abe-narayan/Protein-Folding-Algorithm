@@ -1,77 +1,86 @@
-# Protein Folding: Quantum vs. Classical Scalability
+# Peptide Structure Prediction with a Global CVaR-VQE
 
-**Research question:** How do quantum and classical optimization methods compare in
-scalability as protein length increases in lattice-based protein folding?
+Sequence-only structure prediction for short peptides (10–20 residues), cast as a
+global Variational Quantum Eigensolver (VQE) with a CVaR objective. The optimizer
+searches a discrete torsion-state configuration space over the **entire** peptide at
+once (no block decomposition) and never reads a native structure during the search.
 
-## Overview
+Chignolin (`GYDPETGTWG`, PDB `1UAO`) is the primary target.
 
-Protein folding is a complex optimization problem where the goal is to find the
-lowest-energy structure of an amino acid sequence. As protein length increases, the
-number of possible folding configurations grows exponentially, creating challenges for
-classical optimization methods.
+## What's here
 
-This project explores the scalability of quantum and classical approaches for
-lattice-based protein folding. A hybrid quantum-classical algorithm using a
-CVaR-optimized Variational Quantum Eigensolver (VQE) is implemented and compared with
-classical methods such as brute-force search and simulated annealing. The goal is to
-analyze how accuracy, computational cost, and resource requirements change as protein
-length increases.
+Two independent energy models behind one Hamiltonian interface:
 
-## Objectives
+- **legacy** (`energy_terms.py` + `hamiltonian.py`) — a fast, physics-flavoured 7-term
+  score (Miyazawa–Jernigan contacts, DSSP-style H-bonds, steric, solvation,
+  electrostatics, Ramachandran torsion, compactness).
+- **amber** (`amber_hamiltonian.py`) — OpenMM Amber ff14SB with implicit-solvent GB,
+  backbone-restrained capped minimization, and a collapse floor that sends GB
+  Coulomb-collapse artifacts to `+inf` so they can never be selected.
 
-- Implement a lattice-based protein folding model
-- Encode folding configurations and construct the cost Hamiltonian
-- Implement CVaR-optimized VQE
-- Compare quantum results with classical optimization methods
-- Analyze scalability through runtime, accuracy, and resource requirements
+Two structure representations (`representations.py`):
 
-## Repository structure
+- **torsion** — per-residue backbone (φ, ψ) drawn from a 4- or 8-state discrete torsion
+  library; full backbone + Cβ built by NeRF, sidechains by `sidechains.py`. This is the
+  representation the Amber model requires.
+- **lattice** — a tetrahedral CA-only lattice (Cα trace), for scaling comparisons.
 
-| File | Purpose |
-| --- | --- |
-| `encoding.py` | Lattice model and turn-based encoding of folding configurations |
-| `hamiltonian.py` | Construction of the cost Hamiltonian from a sequence |
-| `vqe.py` | Ansatz, CVaR objective, and the variational optimization loop |
-| `local_hamiltonian.py` | Cost-function wrapper over the energy model |
-| `classical.py` | Classical baseline (exhaustive brute-force search) |
-| `main.py` | Entry point for running the VQE |
-| `results/` | Generated data and figures (planned) |
+Two VQE backends:
 
-## Dependencies
+- **lightning** (`vqe.py`) — dense statevector via PennyLane; the default, simulable to
+  ~30 qubits.
+- **MPS** (`mps/`) — an exact-to-cutoff matrix-product-state sampler (quimb) with the
+  same ansatz, for qubit counts a dense statevector cannot hold (e.g. 30-qubit STATES_8
+  chignolin).
 
-The project requires Python 3 and the following packages (all pinned in
-`requirements.txt`):
-
-| Package | Used for |
-| --- | --- |
-| `numpy` | Numerical arrays and linear algebra |
-| `scipy` | Classical optimizer (`scipy.optimize.minimize`) |
-| `matplotlib` | Plotting protein structures and results |
-| `pennylane` | Quantum circuits and the VQE (`pennylane as qml`) |
-| `networkx` | Graph utilities for the lattice model |
-| `biopython` | Parsing reference PDB structures (`Bio.PDB.PDBParser`) |
-| `jupyter` | Running exploratory notebooks |
-
-The standard-library modules `csv`, `os`, and `time` are also used but require no
-installation.
-
-## Setup
+## Quickstart
 
 ```bash
 pip install -r requirements.txt
-python main.py
+python main.py --validate          # 35-test suite (geometry, energy, CVaR, VQE, amber)
+python main.py --scaling           # analytic qubit / memory / config-space report
+python main.py --predict --sequence GYDPETGTWG
 ```
 
-## Status
+`--predict` prints the VQE solution, distribution stats, and (legacy model) a weighted
+energy breakdown vs a known native, then writes `results/prediction.pdb`.
 
-Work in progress. The core module files are now implemented: the turn-based lattice
-encoding, the cost Hamiltonian / energy model, an exhaustive brute-force search, and a
-CVaR-optimized VQE with its ansatz and optimization loop.
+## Repository layout
 
-Still to do:
+| Path | Purpose |
+| --- | --- |
+| `protein_geometry.py` | Backbone/NeRF geometry, Kabsch/RMSD, PDB IO, DSSP, torsions |
+| `sidechains.py` | Fixed-chi heavy-atom sidechains (G A S T D E N K P Y W) |
+| `representations.py` | Torsion-state library + tetrahedral lattice; `make_representation` |
+| `energy_terms.py` | Legacy 7-term energy (MJ, Ramachandran, H-bond, …) |
+| `hamiltonian.py` | `FoldingHamiltonian` — legacy energy model |
+| `amber_hamiltonian.py` | `AmberHamiltonian` — OpenMM ff14SB + GBn2, collapse floor |
+| `amber_obc2.py` | `build_obc2_native` — AmberHamiltonian on the native GBSAOBCForce (OBC2) |
+| `vqe.py` | CVaR objective, ansatz, and the lightning CVaR-VQE loop |
+| `mps/` | `MPSSampler` + MPS `run_global_cvar_vqe` (pluggable-sampler driver + collapse audit) |
+| `classical_baselines.py` | Random search, simulated annealing, exhaustive search |
+| `evaluation.py` | Representation ceiling + predicted-vs-native metrics |
+| `dataset.py` | PDB download/cache, peptide dataset, identity clustering |
+| `experiments.py` | Experiment drivers + CSV IO (`run_one`, main comparison, ablations) |
+| `main.py` | CLI entry point |
+| `validation.py` | 35-test correctness/leakage suite (`run_all`) |
+| `plot_structures.py` | 3D structure plots (`python plot_structures.py <SEQ>`) |
+| `run_8state_seed0.py` | Driver for the 8-state OBC2-native chignolin seed-0 run |
+| `pdbs/`, `results/` | Cached reference PDBs; generated data and figures |
 
-- Connect the VQE and brute-force search into a single-sequence validation harness that
-  confirms the VQE recovers the true minimum-energy fold on small proteins.
-- Add the simulated-annealing classical baseline.
-- Implement the scalability study across protein lengths (runtime, accuracy, and
-  resource requirements) and generate the comparison plots.
+## Notes
+
+- **Determinism.** With fixed seeds every energy and selection is reproducible to the
+  last bit (the validation suite asserts Amber energy spread `0.000e+00`); `--validate`
+  produces byte-identical output run to run.
+- **No native leakage.** The Hamiltonians take no native structure, and the suite audits
+  that no PDB is read during optimization.
+- **Honest scaling limit.** A genuine global VQE with the 4-state torsion representation
+  is simulable to N ≈ 15 residues (≈30 qubits); the MPS backend extends the reachable
+  qubit count but the config space still grows as `n_states ** N`.
+
+## Dependencies
+
+`numpy`, `scipy`, `pennylane` + `pennylane-lightning` (lightning backend), `quimb` (MPS
+backend), `biopython` (PDB parsing), `matplotlib` (plots), and `openmm` (the Amber
+energy model). All pinned in `requirements.txt`.

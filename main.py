@@ -1,5 +1,6 @@
-
 import argparse
+import math
+import os
 import sys
 from typing import List
 
@@ -11,7 +12,6 @@ import hamiltonian as ham
 import amber_hamiltonian as amber
 import vqe as vqe_mod
 import dataset as ds
-import evaluation as ev
 import experiments as exp
 import validation as val
 
@@ -24,31 +24,7 @@ def _parse_strs(s: str) -> List[str]:
     return [x.strip().upper() for x in s.split(",") if x.strip() != ""]
 
 
-def cmd_predict(args) -> int:
-    """Sequence-only prediction. No PDB is read at any point."""
-    seq = args.sequence.strip().upper()
-    rep = reps.make_representation(args.representation, len(seq),
-                                   n_states=args.states)
-    if args.energy_model == "amber":
-        H = amber.AmberHamiltonian(seq, rep)
-    else:
-        H = ham.FoldingHamiltonian(seq, rep)
-    cfg = exp.default_vqe_config()
-    cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
-               maxiter=args.maxiter, restarts=args.restarts)
-
-    print(f"sequence        : {seq}  (N = {len(seq)})")
-    d = rep.describe()
-    print(f"representation  : {d['name']} ({d['n_states']} states)")
-    print(f"qubits          : {rep.n_qubits}")
-    print(f"config space    : {d['config_space']:.4g}")
-    print(f"statevector mem : {(2 ** rep.n_qubits) * 16 / 1e6:.1f} MB")
-    print("")
-
-    geo.reset_pdb_log()
-    res = vqe_mod.run_global_cvar_vqe(H, seed=args.seed, verbose=True, **cfg)
-    assert len(geo.get_pdb_log()) == 0, "LEAKAGE: PDB read during prediction"
-
+def _print_prediction_summary(res) -> None:
     print()
     print(f"VQE solution    : {res['vqe_bitstring']}")
     print(f"  energy        : {res['vqe_energy']:.4f}")
@@ -65,90 +41,120 @@ def cmd_predict(args) -> int:
     print(f"objective evaluations   : {res['n_objective_evals_total']}")
     print(f"runtime                 : {res['runtime']:.1f} s")
 
-    print()
-    if args.energy_model == "legacy":
-        print("energy breakdown (weighted contributions):")
-        comparisons = [("vqe", res["vqe_bitstring"])]
-        if not rep.is_lattice:
-            comparisons.append(("helix", rep.bitstring_from_states([0] * len(seq))))
-            comparisons.append(("extended", rep.bitstring_from_states([1] * len(seq))))
-        breakdowns = {name: H.components(b) for name, b in comparisons}
-        header = " ".join(f"{n:>12}" for n in breakdowns)
-        print(f"  {'term':<16} {'weight':>7} {header}")
+
+def _print_legacy_energy_breakdown(seq, rep, H, res) -> None:
+    """Weighted 7-term breakdown for the VQE answer vs helix/extended references."""
+    print("energy breakdown (weighted contributions):")
+    comparisons = [("vqe", res["vqe_bitstring"])]
+    if not rep.is_lattice:
+        comparisons.append(("helix", rep.bitstring_from_states([0] * len(seq))))
+        comparisons.append(("extended", rep.bitstring_from_states([1] * len(seq))))
+    breakdowns = {name: H.components(b) for name, b in comparisons}
+    header = " ".join(f"{n:>12}" for n in breakdowns)
+    print(f"  {'term':<16} {'weight':>7} {header}")
+    for term in et.TERM_NAMES:
+        w = H.weights.get(term, 0.0)
+        vals = " ".join(f"{w * breakdowns[n][term]:>12.3f}" for n in breakdowns)
+        print(f"  {term:<16} {w:>7.2f} {vals}")
+    totals = " ".join(f"{H.energy(b):>12.3f}" for _, b in comparisons)
+    print(f"  {'TOTAL':<16} {'':>7} {totals}")
+
+
+def _print_legacy_native_breakdown(seq, rep, H) -> None:
+    """For a sequence with a known native PDB, print the native weighted breakdown,
+    per-residue Ramachandran penalties, and contact-pair table (legacy model only)."""
+    pdb_id = {"GYDPETGTWG": "1UAO"}.get(seq)
+    if not (pdb_id and not rep.is_lattice):
+        return
+    pdb = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pdbs",
+                       f"{pdb_id}.pdb")
+    if not os.path.exists(pdb):
+        return
+    try:
+        nseq, ncoords, nphi, npsi = geo.native_coords_from_pdb(pdb)
+        if len(nseq) != len(seq):
+            print(f"\n  [native breakdown skipped: {pdb_id} has "
+                  f"{len(nseq)} residues, sequence has {len(seq)}]")
+            return
+
+        ncomp = et.energy_components(seq, ncoords, nphi, npsi)
+        print()
+        print(f"native ({pdb_id}) weighted breakdown, for comparison:")
+        print(f"  {'term':<16} {'weight':>7} {'native':>12}")
         for term in et.TERM_NAMES:
             w = H.weights.get(term, 0.0)
-            vals = " ".join(f"{w * breakdowns[n][term]:>12.3f}" for n in breakdowns)
-            print(f"  {term:<16} {w:>7.2f} {vals}")
-        totals = " ".join(f"{H.energy(b):>12.3f}" for _, b in comparisons)
-        print(f"  {'TOTAL':<16} {'':>7} {totals}")
+            print(f"  {term:<16} {w:>7.2f} {w * ncomp[term]:>12.3f}")
+        print(f"  {'TOTAL':<16} {'':>7} "
+              f"{et.total_from_components(ncomp, H.weights):>12.3f}")
+
+        print()
+        print("  native per-residue torsion penalty:")
+        print(f"  {'i':>3} {'aa':>3} {'phi':>8} {'psi':>8} {'penalty':>9}")
+        for i in range(len(seq)):
+            phi_deg = math.degrees(nphi[i])
+            psi_deg = math.degrees(npsi[i])
+            pen = et.rama_penalty(seq[i], nphi[i], npsi[i])
+            print(f"  {i+1:>3} {seq[i]:>3} {phi_deg:>8.1f} "
+                  f"{psi_deg:>8.1f} {pen:>9.3f}")
+
+        nCB = np.asarray(ncoords["CB"], dtype=float)
+        _, _, mj = et.sequence_arrays(seq, True)
+        print()
+        print("  native contact pairs (|i-j| >= 3), "
+              "sorted by CB-CB distance:")
+        print(f"  {'pair':>8} {'d_CB':>7} {'switch':>7} {'MJ':>7} {'product':>8}")
+        pairs = []
+        for a in range(len(seq)):
+            for b in range(a + 3, len(seq)):
+                dist = float(np.linalg.norm(nCB[a] - nCB[b]))
+                s = float(et.switch(np.array([dist]), 4.5, 8.5)[0])
+                m = float(mj[a, b])
+                pairs.append((dist, a, b, s, m))
+        pairs.sort()
+        for dist, a, b, s, m in pairs:
+            tag = f"{seq[a]}{a+1}-{seq[b]}{b+1}"
+            print(f"  {tag:>8} {dist:>7.2f} {s:>7.3f} {m:>7.3f} {s * m:>8.3f}")
+    except Exception as exc:
+        print(f"\n  [native breakdown unavailable: "
+              f"{type(exc).__name__}: {exc}]")
+
+
+def cmd_predict(args) -> int:
+    """Sequence-only prediction. No PDB is read at any point."""
+    seq = args.sequence.strip().upper()
+    rep = reps.make_representation(args.representation, len(seq),
+                                   n_states=args.states)
+    if args.energy_model == "amber":
+        H = amber.AmberHamiltonian(seq, rep)
+    else:
+        H = ham.FoldingHamiltonian(seq, rep)
+    cfg = exp.default_vqe_config()
+    cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
+               maxiter=args.maxiter, restarts=args.restarts)
+
+    d = rep.describe()
+    print(f"sequence        : {seq}  (N = {len(seq)})")
+    print(f"representation  : {d['name']} ({d['n_states']} states)")
+    print(f"qubits          : {rep.n_qubits}")
+    print(f"config space    : {d['config_space']:.4g}")
+    print(f"statevector mem : {(2 ** rep.n_qubits) * 16 / 1e6:.1f} MB")
+    print("")
+
+    geo.reset_pdb_log()
+    res = vqe_mod.run_global_cvar_vqe(H, seed=args.seed, verbose=True, **cfg)
+    assert len(geo.get_pdb_log()) == 0, "LEAKAGE: PDB read during prediction"
+
+    _print_prediction_summary(res)
+
+    print()
+    if args.energy_model == "legacy":
+        _print_legacy_energy_breakdown(seq, rep, H, res)
+        _print_legacy_native_breakdown(seq, rep, H)
     else:
         print("energy breakdown : skipped "
               "(amber model has no 7-term weighted decomposition)")
 
-
-    import os as _os
-    _pdb_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "pdbs")
-    _known = {"GYDPETGTWG": "1UAO"}
-    _pdb_id = _known.get(seq)
-    if _pdb_id and not rep.is_lattice and args.energy_model == "legacy":
-        _pdb = _os.path.join(_pdb_dir, f"{_pdb_id}.pdb")
-        if _os.path.exists(_pdb):
-            try:
-                _nseq, _ncoords, _nphi, _npsi = geo.native_coords_from_pdb(_pdb)
-                if len(_nseq) == len(seq):
-                    _ncomp = et.energy_components(seq, _ncoords, _nphi, _npsi)
-                    print()
-                    print(f"native ({_pdb_id}) weighted breakdown, for comparison:")
-                    print(f"  {'term':<16} {'weight':>7} {'native':>12}")
-                    for term in et.TERM_NAMES:
-                        w = H.weights.get(term, 0.0)
-                        print(f"  {term:<16} {w:>7.2f} "
-                              f"{w * _ncomp[term]:>12.3f}")
-                    print(f"  {'TOTAL':<16} {'':>7} "
-                          f"{et.total_from_components(_ncomp, H.weights):>12.3f}")
-
-
-                    import math as _math
-                    print()
-                    print("  native per-residue torsion penalty:")
-                    print(f"  {'i':>3} {'aa':>3} {'phi':>8} {'psi':>8} "
-                          f"{'penalty':>9}")
-                    for _i in range(len(seq)):
-                        _p = _math.degrees(_nphi[_i])
-                        _q = _math.degrees(_npsi[_i])
-                        _pen = et.rama_penalty(seq[_i], _nphi[_i], _npsi[_i])
-                        print(f"  {_i+1:>3} {seq[_i]:>3} {_p:>8.1f} "
-                              f"{_q:>8.1f} {_pen:>9.3f}")
-
-
-                    _nCB = np.asarray(_ncoords["CB"], dtype=float)
-                    _kd, _q_, _mj = et.sequence_arrays(seq, True)
-                    print()
-                    print("  native contact pairs (|i-j| >= 3), "
-                          "sorted by CB-CB distance:")
-                    print(f"  {'pair':>8} {'d_CB':>7} {'switch':>7} "
-                          f"{'MJ':>7} {'product':>8}")
-                    _pairs = []
-                    for _a in range(len(seq)):
-                        for _b in range(_a + 3, len(seq)):
-                            _d = float(np.linalg.norm(_nCB[_a] - _nCB[_b]))
-                            _s = float(et.switch(np.array([_d]), 4.5, 8.5)[0])
-                            _m = float(_mj[_a, _b])
-                            _pairs.append((_d, _a, _b, _s, _m))
-                    _pairs.sort()
-                    for _d, _a, _b, _s, _m in _pairs:
-                        _tag = f"{seq[_a]}{_a+1}-{seq[_b]}{_b+1}"
-                        print(f"  {_tag:>8} {_d:>7.2f} {_s:>7.3f} "
-                              f"{_m:>7.3f} {_s * _m:>8.3f}")
-                else:
-                    print(f"\n  [native breakdown skipped: {_pdb_id} has "
-                          f"{len(_nseq)} residues, sequence has {len(seq)}]")
-            except Exception as _exc:
-                print(f"\n  [native breakdown unavailable: "
-                      f"{type(_exc).__name__}: {_exc}]")
-
     if not rep.is_lattice:
-        import os
         out = os.path.join(exp._ensure_results_dir(), "prediction.pdb")
         geo.write_pdb(out, seq, rep.build_coords(res["vqe_bitstring"]),
                       remark="global CVaR-VQE sequence-only prediction")
@@ -187,17 +193,6 @@ def cmd_hparams(args) -> int:
     return 0
 
 
-def cmd_prior_ablation(args) -> int:
-    entries = ds.build_dataset(pdb_ids=args.proteins)
-    if not entries:
-        return 1
-    cfg = exp.default_vqe_config()
-    cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
-               maxiter=args.maxiter, restarts=args.restarts)
-    exp.experiment_prior_ablation(entries, args.seeds, vqe_config=cfg)
-    return 0
-
-
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Global full-system CVaR-VQE peptide structure prediction")
@@ -207,7 +202,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--main-comparison", action="store_true")
     p.add_argument("--energy-ablation", action="store_true")
     p.add_argument("--hparams", action="store_true")
-    p.add_argument("--prior-ablation", action="store_true")
 
     p.add_argument("--sequence", default="GYDPETGTWG")
     p.add_argument("--proteins", default="1UAO,5AWL",
@@ -258,9 +252,6 @@ def main() -> int:
     if args.hparams:
         ran = True
         rc |= cmd_hparams(args)
-    if args.prior_ablation:
-        ran = True
-        rc |= cmd_prior_ablation(args)
 
     if not ran:
         parser.print_help()
