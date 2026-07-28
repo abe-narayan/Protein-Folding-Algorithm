@@ -1,4 +1,5 @@
 import math
+from functools import lru_cache
 from typing import Dict, Optional, Tuple
 
 import numpy as np
@@ -98,8 +99,16 @@ def _ang_diff(a: float, b: float) -> float:
     return ((a - b + 180.0) % 360.0) - 180.0
 
 
+@lru_cache(maxsize=100_000)
 def rama_penalty(aa: str, phi_rad: float, psi_rad: float) -> float:
+    """Ramachandran basin penalty for one residue.
 
+    Memoized: the torsion representations draw phi/psi from a fixed library of
+    ``n_states`` discrete values, so across a whole search this function has only
+    ``n_residues x n_states`` distinct arguments (40 for chignolin at 4 states) but is
+    called once per residue per structure. Pure function of its arguments, so the cache
+    returns bit-identical values; continuous native angles simply miss.
+    """
     pd, sd = math.degrees(phi_rad), math.degrees(psi_rad)
     score = 0.0
     for k, (pc, sc, sig, depth) in enumerate(_RAMA_BASINS):
@@ -156,6 +165,7 @@ def sequence_arrays(sequence: str, use_corrected_mj: bool = True):
 
 def clear_sequence_cache() -> None:
     _SEQ_CACHE.clear()
+    rama_penalty.cache_clear()
 
 
 

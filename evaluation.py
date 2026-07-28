@@ -6,10 +6,40 @@ import numpy as np
 import protein_geometry as geo
 
 
+_CEILING_CACHE: Dict[tuple, Dict] = {}
+
+
+def _ceiling_key(rep, native_ca, native_phi, native_psi, seed, iterations) -> tuple:
+    """Everything the annealed ceiling search actually depends on."""
+    def _b(a):
+        return None if a is None else np.ascontiguousarray(
+            np.asarray(a, dtype=float)).tobytes()
+    return (getattr(rep, "name", type(rep).__name__), rep.n_bits,
+            getattr(rep, "n_states", None), int(seed), int(iterations),
+            _b(native_ca), _b(native_phi), _b(native_psi))
+
+
+def clear_ceiling_cache() -> None:
+    _CEILING_CACHE.clear()
+
+
 def representation_ceiling(rep, native_ca: np.ndarray,
                            native_phi: Optional[np.ndarray] = None,
                            native_psi: Optional[np.ndarray] = None,
                            seed: int = 0, iterations: int = 20000) -> Dict:
+    """Best CA-RMSD the representation can express, by annealed search.
+
+    Memoized. The search depends only on the representation, the native structure and
+    ``(seed, iterations)`` -- never on the search arm or on any predicted bitstring --
+    but ``experiments.run_one`` calls it once per CSV row. In a default
+    ``--main-comparison`` that is 24 calls over 6 distinct values; in
+    ``--energy-ablation`` it is 54 calls over 1. The RNG is seeded from ``seed`` alone,
+    so a cache hit returns exactly what a recomputation would.
+    """
+    key = _ceiling_key(rep, native_ca, native_phi, native_psi, seed, iterations)
+    hit = _CEILING_CACHE.get(key)
+    if hit is not None:
+        return dict(hit)
 
     t0 = time.time()
     rng = np.random.default_rng(seed)
@@ -49,13 +79,15 @@ def representation_ceiling(rep, native_ca: np.ndarray,
             if cs < best_s:
                 best, best_s = cand, cs
 
-    return {
+    out = {
         "ceiling_bitstring": best,
         "ceiling_ca_rmsd": float(best_s),
         "projection_ca_rmsd": float(projection_rmsd),
         "method": "annealed search on CA-RMSD ({} iters)".format(iterations),
         "runtime": time.time() - t0,
     }
+    _CEILING_CACHE[key] = out
+    return dict(out)
 
 
 def evaluate_structure(bitstring: str, rep, hamiltonian,
