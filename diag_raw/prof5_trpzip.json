@@ -1,0 +1,19 @@
+{
+  "seq": "SWTWEGNKWTWK",
+  "n_atoms": 218,
+  "n_qubits": 36,
+  "n_eval": 400,
+  "per_call_ms_mean": 52.528787752380595,
+  "per_call_ms_median": 49.79570000432432,
+  "split_ms": {
+    "assemble": 2.5909030437469482,
+    "setpos": 0.05868971347808838,
+    "restraint": 0.09279966354370117,
+    "minimize": 47.90700435638428,
+    "getstate": 0.9027838706970215
+  },
+  "golden_mismatches": 0,
+  "golden_checked": 400,
+  "mps_per_eval_s_init025": 12.655882499995641,
+  "mps_bond_init025": 88
+}

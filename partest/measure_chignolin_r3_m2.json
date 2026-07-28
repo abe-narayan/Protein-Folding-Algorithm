@@ -1,0 +1,27 @@
+{
+  "protein": "chignolin",
+  "n_qubits": 30,
+  "restart_procs": 3,
+  "minim_workers": 2,
+  "wall_s": 2280.2881786823273,
+  "wall_h": 0.6334133829673131,
+  "baseline_s": 8503.567759752274,
+  "baseline_h": 2.3621021554867427,
+  "speedup": 3.7291636378460247,
+  "selected_bitstring": "001000010000000000000000001000",
+  "selected_energy": -368.0638953527846,
+  "selected_ca_rmsd": 3.5287635246453433,
+  "best_seen_bitstring": "100000011011111111100000000101",
+  "best_seen_energy": -396.4426263461881,
+  "n_objective_evals_total": 600,
+  "n_energy_evaluations": 95853,
+  "n_unique_structures_cached": 95643,
+  "checks": {
+    "sel_bits_match": true,
+    "sel_E_abs_err": 0.0,
+    "bs_bits_match": true,
+    "bs_E_abs_err": 0.0
+  },
+  "byte_identical_selection": true,
+  "audit_clean": true
+}

@@ -1,0 +1,27 @@
+{
+  "protein": "trpzip",
+  "n_qubits": 36,
+  "restart_procs": 3,
+  "minim_workers": 2,
+  "wall_s": 4255.97522187233,
+  "wall_h": 1.1822153394089805,
+  "baseline_s": 15231.18548321724,
+  "baseline_h": 4.230884856449233,
+  "speedup": 3.5787768229807946,
+  "selected_bitstring": "001010000000000000000000001000000000",
+  "selected_energy": -395.792567917652,
+  "selected_ca_rmsd": 4.789368410686968,
+  "best_seen_bitstring": "011011100000000000000000001000000000",
+  "best_seen_energy": -398.80968070881033,
+  "n_objective_evals_total": 600,
+  "n_energy_evaluations": 134066,
+  "n_unique_structures_cached": 133801,
+  "checks": {
+    "sel_bits_match": true,
+    "sel_E_abs_err": 0.0,
+    "bs_bits_match": true,
+    "bs_E_abs_err": 0.0
+  },
+  "byte_identical_selection": true,
+  "audit_clean": true
+}

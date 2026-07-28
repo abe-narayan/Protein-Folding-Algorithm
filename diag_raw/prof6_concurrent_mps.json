@@ -1,0 +1,11 @@
+{
+  "n_qubits": 30,
+  "ops_per_proc": 10,
+  "solo_wall_s": 90.24441289901733,
+  "solo_per_op_s": 9.024441289901734,
+  "par3_wall_s": 110.37250256538391,
+  "par3_total_ops": 30,
+  "par3_per_op_s": 11.03725025653839,
+  "concurrent_throughput_speedup": 2.4529047761390705,
+  "blas_threads": "1"
+}

@@ -1,0 +1,26 @@
+{
+  "N": 1600,
+  "cpu_count": 8,
+  "runs": {
+    "serial_inproc": {
+      "wall_s": 43.43581008911133,
+      "per_min_ms": 27.14738130569458,
+      "throughput_per_s": 36.835965456094826,
+      "mismatches": 0
+    },
+    "pool_4": {
+      "wall_s": 20.99897813796997,
+      "per_min_ms": 13.124361336231232,
+      "throughput_per_s": 76.19418380682578,
+      "speedup_vs_serial": 2.0684725610800787,
+      "mismatches": 0
+    },
+    "pool_8": {
+      "wall_s": 14.714670896530151,
+      "per_min_ms": 9.196669310331345,
+      "throughput_per_s": 108.73501767391168,
+      "speedup_vs_serial": 2.95187098607512,
+      "mismatches": 0
+    }
+  }
+}

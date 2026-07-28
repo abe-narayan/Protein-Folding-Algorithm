@@ -1,0 +1,11 @@
+{
+  "n_evals": 28,
+  "cumulative_unique": 5903,
+  "total_energy_calls": 12745,
+  "hits": 6842,
+  "hit_rate": 0.536837975676736,
+  "elapsed_s": 302.9862771034241,
+  "missing_from_gold": 0,
+  "mean_unique_per_eval": 455.17857142857144,
+  "mean_new_per_eval": 210.82142857142858
+}

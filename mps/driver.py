@@ -29,7 +29,8 @@ __all__ = ["run_global_cvar_vqe"]
 
 
 def _run_single(hamiltonian, circuit, sampler, n_qubits, layers, alpha, shots,
-                maxiter, seed, optimizer, tracker, init_scale, verbose) -> Dict:
+                maxiter, seed, optimizer, tracker, init_scale, verbose,
+                energy_batch=None) -> Dict:
     fmt = f"0{n_qubits}b"
     n_par = n_parameters(n_qubits, layers)
     init_rng = np.random.default_rng(np.random.SeedSequence([seed, 0xC0FFEE]))
@@ -55,10 +56,15 @@ def _run_single(hamiltonian, circuit, sampler, n_qubits, layers, alpha, shots,
             idx = sampler.draw_indices(params, shots, rng)
 
         uniq, inverse = np.unique(idx, return_inverse=True)
+        bslist = [format(int(u), fmt) for u in uniq]
+        # ``energy_batch`` (REC 1/2) computes the whole unique set at once (shared cache
+        # + minimization pool) and returns {bitstring: energy}; None keeps the original
+        # serial per-structure path. Either way the offer order (np.unique-sorted) and
+        # the filled uniq_energies are identical, so best-seen and CVaR are unchanged.
+        emap = None if energy_batch is None else energy_batch(bslist)
         uniq_energies = np.empty(uniq.size, dtype=float)
-        for m, u in enumerate(uniq):
-            bs = format(int(u), fmt)
-            e = hamiltonian.energy(bs)
+        for m, bs in enumerate(bslist):
+            e = hamiltonian.energy(bs) if emap is None else emap[bs]
             uniq_energies[m] = e
             tracker.offer(bs, e)
         sample_energies = uniq_energies[inverse]
@@ -104,8 +110,18 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
                         final_shots: int = 8192, init_scale: float = 0.6,
                         device: str = "lightning.qubit",
                         sampler: Optional[object] = None,
-                        verbose: bool = False) -> Dict:
-    """CVaR-VQE over the whole register, lightning (``sampler=None``) or MPS."""
+                        verbose: bool = False,
+                        hamiltonian_builder=None, restart_procs: int = 1,
+                        minim_workers: int = 0, use_shared_cache: bool = True) -> Dict:
+    """CVaR-VQE over the whole register, lightning (``sampler=None``) or MPS.
+
+    Parallel (REC 1/2, result-identical, opt-in): when ``restart_procs > 1`` and a
+    picklable ``hamiltonian_builder`` is given, the ``restarts`` COBYLA restarts run as
+    independent processes with a shared-memory energy cache; ``minim_workers > 1`` adds a
+    per-restart minimization pool (REC 2). Selection depends only on the unchanged
+    energies and on ``seed``/restart-seed RNG streams, so the result is byte-identical to
+    the serial path (verified). ``restart_procs == 1`` keeps the original serial path.
+    """
     n_qubits = hamiltonian.n_qubits
     n_par = n_parameters(n_qubits, layers)
     if optimizer.upper() == "COBYLA" and maxiter < n_par + 2:
@@ -120,15 +136,40 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
     t0 = time.time()
     runs = []
     best_run = None
-    for r, rseed in enumerate(restart_seeds):
-        if verbose:
-            print(f"    --- restart {r + 1}/{restarts} (seed {rseed}) ---")
-        run = _run_single(hamiltonian, circuit, sampler, n_qubits, layers, alpha,
-                          shots, maxiter, rseed, optimizer, tracker, init_scale,
-                          verbose)
-        runs.append(run)
-        if best_run is None or run["final_objective"] < best_run["final_objective"]:
-            best_run = run
+    if restart_procs and restart_procs > 1 and hamiltonian_builder is not None:
+        # ---- REC 1/2: restarts as independent processes -------------------------
+        if sampler is None:
+            raise ValueError("parallel restarts require an MPS sampler")
+        from mps.parallel import run_parallel_restarts
+        results, cache_snapshot = run_parallel_restarts(
+            hamiltonian_builder, sampler, restart_seeds, n_qubits, layers, alpha,
+            shots, maxiter, optimizer, init_scale, verbose,
+            minim_workers=minim_workers, use_shared_cache=use_shared_cache)
+        for res in results:                       # results are in restart order
+            run = res["run"]
+            run["final_params"] = np.asarray(run["final_params"], dtype=float)
+            runs.append(run)
+            if best_run is None or run["final_objective"] < best_run["final_objective"]:
+                best_run = run
+        # Merge best-seen across restarts in restart order (BestSeenTracker.offer only
+        # updates on a strict <, reproducing the serial first-wins tie-break exactly).
+        for res in results:
+            if res["best_seen_bs"] is not None:
+                tracker.offer(res["best_seen_bs"], res["best_seen_e"])
+        # Union of computed energies -> parent H, so final sampling + native/snap energies
+        # are cache hits (identical values). n_energy_evaluations reflects total minims.
+        hamiltonian._cache.update(cache_snapshot)
+        hamiltonian.n_energy_evaluations += sum(r["n_minimizations"] for r in results)
+    else:
+        for r, rseed in enumerate(restart_seeds):
+            if verbose:
+                print(f"    --- restart {r + 1}/{restarts} (seed {rseed}) ---")
+            run = _run_single(hamiltonian, circuit, sampler, n_qubits, layers, alpha,
+                              shots, maxiter, rseed, optimizer, tracker, init_scale,
+                              verbose)
+            runs.append(run)
+            if best_run is None or run["final_objective"] < best_run["final_objective"]:
+                best_run = run
     total_runtime = time.time() - t0
 
     fmt = f"0{n_qubits}b"
@@ -146,9 +187,15 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
         entropy = float(-np.sum(nz * np.log2(nz)))
     else:                                          # ---- MPS: empirical final stats ----
         final_idx = sampler.draw_indices(best_run["final_params"], final_shots, final_rng)
-        counts = np.bincount(final_idx)
-        freq = counts[counts > 0] / final_shots
-        modal_bits = format(int(np.argmax(counts)), fmt)
+        # np.bincount over basis indices allocates max(index)+1 entries — at 36 qubits that
+        # is ~2^36 (512 GiB) and OOMs. Count over the OBSERVED indices instead: byte-
+        # identical result — `freq` is the same ascending-value frequency vector that
+        # bincount[bincount>0]/N gives, and argmax tie-breaks to the lowest value the same
+        # way. (Selection below is unaffected; this only feeds the reported distribution
+        # stats + modal bitstring. Matches the fix the golden 36q run used.)
+        vals, vcounts = np.unique(final_idx, return_counts=True)
+        freq = vcounts / final_shots
+        modal_bits = format(int(vals[np.argmax(vcounts)]), fmt)
         top1 = float(freq.max())
         top16 = float(np.sort(freq)[::-1][:16].sum())
         entropy = float(-np.sum(freq * np.log2(freq)))

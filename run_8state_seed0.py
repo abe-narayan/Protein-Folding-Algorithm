@@ -14,15 +14,32 @@ interpreter that owns openmm + quimb, e.g.:
 """
 import os
 
+# REC 4: pin numeric-library thread pools to 1 BEFORE numpy/OpenBLAS initialise their
+# pools (must precede `import numpy`). Zero result change; avoids BLAS oversubscription
+# and is the free enabler for the REC 1/2 process parallelism. mps.parallel.pin_threads
+# is the same logic used inside worker initializers.
+for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS",
+           "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ[_v] = "1"
+
 import numpy as np
+
+import multiprocessing as mp
 
 import amber_hamiltonian as amb
 import representations as reps
 import protein_geometry as geo
 from amber_obc2 import build_obc2_native
 from mps import MPSSampler, run_global_cvar_vqe
+from mps.parallel import OBC2Builder
 
 SEQ = "GYDPETGTWG"
+
+# Opt-in REC 1/2 parallelism (default OFF -> serial, byte-identical to the persisted
+# seed-0 run). Set PFA_RESTART_PROCS>1 to run the 3 restarts as processes and
+# PFA_MINIM_WORKERS>1 to add a per-restart minimization pool. The result is unchanged.
+RESTART_PROCS = int(os.environ.get("PFA_RESTART_PROCS", "1"))
+MINIM_WORKERS = int(os.environ.get("PFA_MINIM_WORKERS", "0"))
 
 
 def main() -> None:
@@ -35,10 +52,14 @@ def main() -> None:
     rmsd = lambda b: geo.ca_rmsd(rep.build_coords(b)["CA"], nat_ca)
 
     sampler = MPSSampler(H.n_qubits, layers=4)
-    print(f"n_qubits={H.n_qubits}  default STATES_8  MPS backend  config A", flush=True)
+    builder = OBC2Builder(SEQ, 8) if RESTART_PROCS > 1 else None
+    print(f"n_qubits={H.n_qubits}  default STATES_8  MPS backend  config A"
+          f"  | restart_procs={RESTART_PROCS} minim_workers={MINIM_WORKERS}", flush=True)
     res = run_global_cvar_vqe(H, sampler=sampler, layers=4, alpha=0.15, shots=1024,
                               maxiter=200, restarts=3, seed=0, final_shots=8192,
-                              init_scale=0.25, verbose=True)
+                              init_scale=0.25, verbose=True,
+                              hamiltonian_builder=builder,
+                              restart_procs=RESTART_PROCS, minim_workers=MINIM_WORKERS)
     a = res["audit"]
 
     print("\n==================== 8-STATE CHIGNOLIN, SEED 0 (config A) ====================")
@@ -85,4 +106,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    mp.freeze_support()
     main()
