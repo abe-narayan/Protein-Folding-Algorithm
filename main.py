@@ -171,7 +171,8 @@ def cmd_main_comparison(args) -> int:
     cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
                maxiter=args.maxiter, restarts=args.restarts)
     exp.experiment_main_comparison(entries, args.seeds, vqe_config=cfg,
-                                   energy_model=args.energy_model)
+                                   energy_model=args.energy_model,
+                                   n_workers=args.workers)
     return 0
 
 def cmd_energy_ablation(args) -> int:
@@ -181,7 +182,8 @@ def cmd_energy_ablation(args) -> int:
     cfg = exp.default_vqe_config()
     cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
                maxiter=args.maxiter, restarts=args.restarts)
-    exp.experiment_energy_ablation(entries, args.seeds, vqe_config=cfg)
+    exp.experiment_energy_ablation(entries, args.seeds, vqe_config=cfg,
+                                   n_workers=args.workers)
     return 0
 
 
@@ -189,7 +191,8 @@ def cmd_hparams(args) -> int:
     entries = ds.build_dataset(pdb_ids=[args.protein])
     if not entries:
         return 1
-    exp.experiment_vqe_hyperparameters(entries[0], args.seeds)
+    exp.experiment_vqe_hyperparameters(entries[0], args.seeds,
+                                       n_workers=args.workers)
     return 0
 
 
@@ -221,6 +224,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--maxiter", type=int, default=300)
     p.add_argument("--restarts", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--workers", type=int, default=None,
+                   help="processes to fan the experiment loop across "
+                        "(default 1 = serial, or $PFA_WORKERS; 0 = cores - 2). "
+                        "Each (arm, protein, seed) cell is independent, so this "
+                        "changes wall-clock only, not results.")
     return p
 
 

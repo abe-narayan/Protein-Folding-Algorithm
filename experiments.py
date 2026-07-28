@@ -1,8 +1,22 @@
 import csv
 import json
+import multiprocessing as mp
 import os
 import time
 from typing import Dict, List, Optional
+
+# Pin BLAS/OMP thread pools to 1 BEFORE numpy is imported. Two reasons, both required
+# for the worker pool below to be result-identical to the serial path:
+#   1. Determinism. Multi-threaded BLAS reductions associate in a nondeterministic
+#      order, so a dot product or SVD can differ in the last ulp between runs. That is
+#      normally invisible, but `evaluation.representation_ceiling` and the lattice
+#      `native_bitstring` make 20,000 sequential accept/reject decisions on `cs < cur_s`,
+#      and a single flipped comparison sends the whole annealing trajectory elsewhere.
+#   2. Oversubscription. N worker processes each spawning a full thread pool thrashes.
+# The arrays here are tiny (n_residues ~ 10-20), so nothing was gaining from threading.
+for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS",
+           "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")
 
 import numpy as np
 
@@ -48,6 +62,52 @@ def append_csv(path: str, row: Dict) -> None:
         if write_header:
             w.writeheader()
         w.writerow(clean)
+
+
+def resolve_workers(n_workers: Optional[int] = None) -> int:
+    """How many processes to fan the experiment loop across.
+
+    ``None`` reads ``PFA_WORKERS`` and otherwise stays serial, so the default behaviour
+    is unchanged. ``0`` means "one per core, less two".
+    """
+    if n_workers is None:
+        n_workers = int(os.environ.get("PFA_WORKERS", "1"))
+    if n_workers == 0:
+        n_workers = max(1, (os.cpu_count() or 2) - 2)
+    return max(1, int(n_workers))
+
+
+def _run_one_task(task: Dict):
+    """Pool worker: one ``run_one`` call. Top-level so it is picklable under spawn.
+
+    Returns ``(row, None)`` or ``(None, error_string)`` -- exceptions are returned rather
+    than raised so one bad cell cannot take down the sweep, matching the serial path's
+    per-iteration try/except.
+    """
+    label = task.pop("_label")
+    try:
+        row = run_one(**task)
+        row["method"] = label
+        return row, None
+    except MemoryError as exc:
+        return None, f"SKIPPED {task['entry'].pdb_id} seed {task['seed']}: {exc}"
+    except Exception as exc:
+        return None, (f"FAILED {task['entry'].pdb_id} seed {task['seed']}: "
+                      f"{type(exc).__name__}: {exc}")
+
+
+def _dispatch(tasks: List[Dict], n_workers: int, worker=_run_one_task):
+    """Run ``tasks`` serially or across a process pool, always yielding in task order.
+
+    Order matters: the parent appends to the CSV in the order results arrive, so
+    preserving it keeps the output file identical to the serial run rather than merely
+    equivalent. ``Pool.imap`` is ordered, so this holds regardless of completion order.
+    """
+    if n_workers <= 1:
+        return [worker(dict(t)) for t in tasks]
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(processes=n_workers) as pool:
+        return list(pool.imap(worker, [dict(t) for t in tasks]))
 
 
 def default_vqe_config() -> Dict:
@@ -179,7 +239,8 @@ def experiment_main_comparison(entries: List[ds.PeptideEntry],
                                seeds: List[int],
                                vqe_config: Optional[Dict] = None,
                                energy_model: str = "legacy",
-                               csv_name: str = "main_comparison.csv") -> List[Dict]:
+                               csv_name: str = "main_comparison.csv",
+                               n_workers: Optional[int] = None) -> List[Dict]:
 
     path = os.path.join(_ensure_results_dir(), csv_name)
     cfg = dict(default_vqe_config() if vqe_config is None else vqe_config)
@@ -198,27 +259,30 @@ def experiment_main_comparison(entries: List[ds.PeptideEntry],
     print("EXPERIMENT 1: MAIN COMPARISON")
     print("=" * 72)
 
+    # Every (arm, entry, seed) cell is independent: its own Hamiltonian, its own RNG
+    # stream seeded from `seed`, and no state shared with any other cell. Building the
+    # full task list first lets them run concurrently without changing any one of them.
+    tasks = []
     for arm_name, rep_kind, n_states, method in arms:
         if energy_model == "amber" and rep_kind == "lattice":
             print(f"\n--- arm {arm_name} SKIPPED "
                   f"(amber energy model has no lattice topology) ---")
             continue
-        print(f"\n--- arm {arm_name} ---")
         for entry in entries:
             for seed in seeds:
-                try:
-                    row = run_one(entry, representation=rep_kind,
-                                  n_states=n_states, seed=seed,
-                                  vqe_config=cfg, method=method,
-                                  energy_model=energy_model)
-                    row["method"] = arm_name
-                    append_csv(path, row)
-                    rows.append(row)
-                except MemoryError as exc:
-                    print(f"    SKIPPED {entry.pdb_id} seed {seed}: {exc}")
-                except Exception as exc:
-                    print(f"    FAILED {entry.pdb_id} seed {seed}: "
-                          f"{type(exc).__name__}: {exc}")
+                tasks.append(dict(_label=arm_name, entry=entry,
+                                  representation=rep_kind, n_states=n_states,
+                                  seed=seed, vqe_config=cfg, method=method,
+                                  energy_model=energy_model))
+
+    n_workers = resolve_workers(n_workers)
+    print(f"\n  {len(tasks)} runs over {n_workers} worker(s)")
+    for row, err in _dispatch(tasks, n_workers):
+        if err is not None:
+            print(f"    {err}")
+            continue
+        append_csv(path, row)
+        rows.append(row)
 
     _print_summary(rows)
     print(f"\n  results written to {path}")
@@ -256,7 +320,8 @@ def _print_summary(rows: List[Dict]) -> None:
 def experiment_energy_ablation(entries: List[ds.PeptideEntry],
                                seeds: List[int],
                                vqe_config: Optional[Dict] = None,
-                               csv_name: str = "energy_ablation.csv") -> List[Dict]:
+                               csv_name: str = "energy_ablation.csv",
+                               n_workers: Optional[int] = None) -> List[Dict]:
 
     path = os.path.join(_ensure_results_dir(), csv_name)
     cfg = dict(default_vqe_config() if vqe_config is None else vqe_config)
@@ -273,29 +338,52 @@ def experiment_energy_ablation(entries: List[ds.PeptideEntry],
         variants.append((f"no_{term}", w, True))
     variants.append(("raw_mj", dict(et.DEFAULT_WEIGHTS), False))
 
-    for name, weights, corrected in variants:
-        print(f"\n--- variant {name} ---")
-        for entry in entries:
-            for seed in seeds:
-                seq = entry.sequence
-                rep = reps.TorsionStateRepresentation(len(seq), n_states=4)
-                H = ham.FoldingHamiltonian(seq, rep, weights=weights,
-                                           use_corrected_mj=corrected)
-                geo.reset_pdb_log()
-                t0 = time.time()
-                try:
-                    res = vqe_mod.run_global_cvar_vqe(H, seed=seed, **cfg)
-                except MemoryError as exc:
-                    print(f"    SKIPPED {entry.pdb_id}: {exc}")
-                    continue
-                rt = time.time() - t0
-                assert len(geo.get_pdb_log()) == 0, "LEAKAGE during ablation"
+    tasks = [dict(_label=name, weights=weights, corrected=corrected,
+                  entry=entry, seed=seed, cfg=cfg)
+             for name, weights, corrected in variants
+             for entry in entries for seed in seeds]
 
-                nseq, ncoords, nphi, npsi = ds.load_native(entry)
-                m = ev.evaluate_structure(res["vqe_bitstring"], rep, H,
-                                          nseq, ncoords, nphi, npsi)
-                ceil_ = ev.representation_ceiling(rep, ncoords["CA"], nphi, npsi)
-                row = {
+    n_workers = resolve_workers(n_workers)
+    print(f"\n  {len(tasks)} runs over {n_workers} worker(s)")
+    for row, err in _dispatch(tasks, n_workers, worker=_run_ablation_task):
+        if err is not None:
+            print(f"    {err}")
+            continue
+        append_csv(path, row)
+        rows.append(row)
+        print(f"    {row['protein']} {row['method']} seed {row['seed']}: "
+              f"RMSD {row['ca_rmsd_angstrom']:.2f} A")
+
+    _print_summary(rows)
+    print(f"\n  results written to {path}")
+    return rows
+
+
+def _run_ablation_task(task: Dict):
+    """Pool worker for the energy-term ablation. Top-level so it is picklable.
+
+    Body is the serial loop's body verbatim -- same Hamiltonian construction, same
+    `seed` into the VQE, same metric calls -- so a cell computes what it always did.
+    """
+    name = task["_label"]
+    weights, corrected = task["weights"], task["corrected"]
+    entry, seed, cfg = task["entry"], task["seed"], task["cfg"]
+    try:
+        seq = entry.sequence
+        rep = reps.TorsionStateRepresentation(len(seq), n_states=4)
+        H = ham.FoldingHamiltonian(seq, rep, weights=weights,
+                                   use_corrected_mj=corrected)
+        geo.reset_pdb_log()
+        t0 = time.time()
+        res = vqe_mod.run_global_cvar_vqe(H, seed=seed, **cfg)
+        rt = time.time() - t0
+        assert len(geo.get_pdb_log()) == 0, "LEAKAGE during ablation"
+
+        nseq, ncoords, nphi, npsi = ds.load_native(entry)
+        m = ev.evaluate_structure(res["vqe_bitstring"], rep, H,
+                                  nseq, ncoords, nphi, npsi)
+        ceil_ = ev.representation_ceiling(rep, ncoords["CA"], nphi, npsi)
+        row = {
                     "protein": entry.pdb_id, "sequence": seq,
                     "length": len(seq), "method": name,
                     "representation": "torsion", "n_states": 4,
@@ -324,19 +412,18 @@ def experiment_energy_ablation(entries: List[ds.PeptideEntry],
                     "distribution_entropy_bits": res["distribution_entropy_bits"],
                     "vqe_bitstring": res["vqe_bitstring"],
                     "best_seen_bitstring": res["best_seen_bitstring"],
-                }
-                append_csv(path, row)
-                rows.append(row)
-                print(f"    {entry.pdb_id} seed {seed}: "
-                      f"RMSD {row['ca_rmsd_angstrom']:.2f} A")
-
-    _print_summary(rows)
-    print(f"\n  results written to {path}")
-    return rows
+        }
+        return row, None
+    except MemoryError as exc:
+        return None, f"SKIPPED {entry.pdb_id} {name}: {exc}"
+    except Exception as exc:
+        return None, (f"FAILED {entry.pdb_id} {name} seed {seed}: "
+                      f"{type(exc).__name__}: {exc}")
 
 
 def experiment_vqe_hyperparameters(entry: ds.PeptideEntry, seeds: List[int],
-                                   csv_name: str = "vqe_hparams.csv") -> List[Dict]:
+                                   csv_name: str = "vqe_hparams.csv",
+                                   n_workers: Optional[int] = None) -> List[Dict]:
 
     path = os.path.join(_ensure_results_dir(), csv_name)
     rows = []
@@ -351,18 +438,21 @@ def experiment_vqe_hyperparameters(entry: ds.PeptideEntry, seeds: List[int],
         grid.append(dict(default_vqe_config(), layers=layers))
     grid.append(dict(default_vqe_config(), optimizer="SPSA", maxiter=150))
 
+    tasks = []
     for cfg in grid:
-        tag = (f"a{cfg['alpha']}_L{cfg['layers']}_{cfg['optimizer']}")
-        print(f"\n--- {tag} ---")
+        tag = f"a{cfg['alpha']}_L{cfg['layers']}_{cfg['optimizer']}"
         for seed in seeds:
-            try:
-                row = run_one(entry, representation="torsion", n_states=4,
-                              seed=seed, vqe_config=cfg, method="vqe")
-                row["method"] = tag
-                append_csv(path, row)
-                rows.append(row)
-            except Exception as exc:
-                print(f"    FAILED seed {seed}: {type(exc).__name__}: {exc}")
+            tasks.append(dict(_label=tag, entry=entry, representation="torsion",
+                              n_states=4, seed=seed, vqe_config=cfg, method="vqe"))
+
+    n_workers = resolve_workers(n_workers)
+    print(f"\n  {len(tasks)} runs over {n_workers} worker(s)")
+    for row, err in _dispatch(tasks, n_workers):
+        if err is not None:
+            print(f"    {err}")
+            continue
+        append_csv(path, row)
+        rows.append(row)
 
     _print_summary(rows)
     print(f"\n  results written to {path}")

@@ -123,7 +123,7 @@ Three things dominate the total, in order:
 Ranked by (time saved) × (confidence), with the effect on results stated for each. The
 first four are the ones that matter.
 
-### O1. Parallelize the experiment loop — up to 8× on every experiment ✦
+### O1. Parallelize the experiment loop — up to 8× on every experiment ✦ **[DONE]**
 
 `experiment_main_comparison`, `experiment_energy_ablation` and
 `experiment_vqe_hyperparameters` all run a fully sequential triple loop over
@@ -136,11 +136,35 @@ separate RNG stream, results appended to a CSV.
   internal threading does not oversubscribe.
 - `append_csv` must be serialized — collect rows in the parent, or take a lock.
 
-**Saving:** `--energy-ablation` 4.3 h → **~35 min**; `--hparams` 2.3 h → ~20 min;
-`--main-comparison` 35 min → ~6 min. **Results identical** — nothing crosses run
-boundaries.
+Implemented as `--workers N` on `main.py` (or `$PFA_WORKERS`; `0` = cores − 2).
+**Default stays 1, i.e. serial**, so nothing changes unless asked.
 
-### O2. Turn on the parallel paths that are already written but default to off ✦
+Three details that make it result-identical rather than merely equivalent:
+
+- **Thread pinning is mandatory, not an optimization.** `experiments.py` now pins
+  `OPENBLAS/OMP/MKL/NUMEXPR_NUM_THREADS=1` before importing NumPy. Multi-threaded BLAS
+  reductions associate nondeterministically, and `representation_ceiling` makes 20 000
+  sequential `cs < cur_s` decisions — one comparison flipping on a last-ulp difference
+  sends the whole annealing trajectory elsewhere. The arrays here are ~10–20 elements,
+  so nothing was gaining from threading anyway.
+- **`Pool.imap` preserves order**, so the parent appends rows in task order and the CSV
+  is identical, not just equivalent.
+- **Exceptions are returned, not raised**, matching the serial loop's per-cell
+  `try/except` so one bad cell cannot take down a sweep.
+
+**Verified:** serial vs 4 workers on `--main-comparison` (1UAO, 2 seeds, 4 arms) —
+8 rows × 35 columns compared as raw CSV cells, **0 mismatches**, row order preserved.
+Serial vs 8 workers on `--energy-ablation` (all 9 variants) — **0 mismatches**, variant
+order preserved. `runtime` excluded from both, since it is a wall-clock measurement.
+
+**Measured speedup: 1.66×** (8 tasks / 4 workers) and **1.08×** (9 tasks / 8 workers).
+Both tests are startup-dominated — worker spawn costs **1.60 s** (importing NumPy, SciPy
+and PennyLane) against deliberately shrunk 3–6 s tasks. Real cells run 47–286 s, where
+1.6 s is 1–3 %, so the projections below should be close; **but that is extrapolation, not
+something I measured.** One real effect that does cut against it: the O7 ceiling cache is
+per-process, so workers each recompute ceilings the serial run cached.
+
+### O2. Turn on the parallel paths that are already written but default to off ✦ **[GATED — cannot verify here]**
 
 `mps/parallel.py` implements process-parallel restarts (REC 1), a minimization pool
 (REC 2) and thread pinning (REC 4), documented and verified as *result-identical*, and
@@ -151,8 +175,25 @@ defaulting to serial. The measured speedups are already in `diag_raw`:
 - `prof6`: 3 concurrent MPS processes = **2.45×** throughput.
 
 **Saving:** `PFA_RESTART_PROCS=3 PFA_MINIM_WORKERS=8` takes `run_8state_seed0.py` from
-~4.3 h to **~1.5 h** with no code change at all. **Results identical** (per that module's
-own verification).
+~4.3 h to **~1.5 h** with no code change at all.
+
+**I did not enable this, and the default is deliberately left serial.** Two reasons:
+
+1. **It cannot be verified in this environment.** `openmm` and `quimb` are not installed,
+   so neither the parallel path nor the checks that pin it can execute. "Result-identical"
+   here is `mps/parallel.py`'s own claim plus verification done on some other machine.
+   The failure modes that would break it — OpenMM platform selection, thread pinning,
+   worker Hamiltonian reconstruction — are exactly the environment-dependent ones.
+2. **`run_8state_seed0.py`'s seed-0 data is byte-pinned.** `amber_obc2.py` documents that
+   its construction is verbatim so energies stay identical to the persisted set. Flipping
+   a default that touches that run is not a change to make on an unverified claim.
+
+What I added instead is the gate: **`partest/verify_parallel.py`** runs the three checks
+that already exist — `golden_check.py` (energies vs the persisted seed-0 CSVs, max abs
+error 0.0), `rec2_pool_check.py` (the same energies through pool workers),
+`equiv_check.py` (serial vs parallel driver, bit-for-bit selection) — and prints the
+enable command only if all three pass. On a machine without `openmm`/`quimb` it exits 2
+and refuses. Run it there, then set the env vars.
 
 The equivalent does not exist for the lightning path — `vqe.run_global_cvar_vqe` runs its
 `restarts` loop serially with no parallel option. Adding one gives ~3.5× on every
@@ -313,16 +354,31 @@ does bound the N=10 arms, but it is not the runtime lever the doc's framing sugg
 
 ---
 
-## 4. Suggested order
+## 4. Status and suggested order
 
-1. **O2** — zero code change, 2.9× on the amber path today.
-2. **O1** — one `multiprocessing.Pool`, ~8× on the three long experiments, results identical.
-3. **O7** — a dict, removes 150 s of pure waste.
-4. **O4 + O5** — the energy hot path; results identical, and they compound with O1.
-5. **O6, O8** — good, more invasive.
-6. **O3, O9** — real speedups but they change numbers. Validate against a pinned seed
+**Landed** (all verified bit-identical, default behaviour unchanged):
+
+| | what | verification |
+| --- | --- | --- |
+| **O4** | `lru_cache` on `rama_penalty` | 74 420-point grid + 1000 structures, 0 mismatches |
+| **O7** | memoized `representation_ceiling` | forced recompute matches; seeds/reps don't collide |
+| **O1** | `--workers N` on the experiment loops | 8 rows × 35 cols and 9 ablation variants, 0 mismatches |
+
+**Gated:** **O2** — `partest/verify_parallel.py` added; run it on a machine with
+`openmm`+`quimb`, then set `PFA_RESTART_PROCS` / `PFA_MINIM_WORKERS`.
+
+**Remaining, in order:**
+
+1. **O5** — batch the energy over the unique set. Biggest remaining identical-result win,
+   and it compounds with O1. Needs a bit-identity check, since batching changes NumPy
+   reduction shapes and `np.sum`'s pairwise blocking depends on array shape and strides.
+2. **O6, O8** — good, more invasive.
+3. **O3, O9** — real speedups but they change numbers. Validate against a pinned seed
    before adopting.
-7. **O10** — do it for soundness, not for speed.
+4. **O10** — do it for soundness, not for speed.
+
+Also outstanding and blocking everything on a machine without OpenMM: the module-scope
+`import amber_hamiltonian` in `main.py`, `validation.py` and `experiments.py` (§2).
 
 Fixing the module-scope `openmm` imports (§2) is a prerequisite for any of this being
 runnable on a machine without OpenMM.
