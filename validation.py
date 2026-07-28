@@ -9,7 +9,13 @@ import representations as reps
 import sidechains as sc
 import energy_terms as et
 import hamiltonian as ham
-import amber_hamiltonian as amb
+try:
+    import amber_hamiltonian as amb
+    _HAVE_AMBER = True
+except ImportError as _exc:          # openmm is an optional dependency
+    amb = None
+    _HAVE_AMBER = False
+    _AMBER_IMPORT_ERROR = _exc
 import vqe as vqe_mod
 import classical_baselines as cb
 import evaluation as ev
@@ -693,14 +699,20 @@ def run_all() -> bool:
     ]
 
     results = []
+    skipped = 0
     for t in tests:
+        if not _HAVE_AMBER and t.__name__.startswith("test_amber_"):
+            print(f"  [SKIP] {t.__name__} -- openmm not installed")
+            skipped += 1
+            continue
         try:
             results.append(bool(t()))
         except Exception as exc:
             print(f"  [{_FAIL}] {t.__name__} raised {type(exc).__name__}: {exc}")
             results.append(False)
     print("-" * 72)
-    print(f"  {sum(results)}/{len(results)} passed. "
-          f"ALL PASSED: {all(results)}")
+    print(f"  {sum(results)}/{len(results)} passed"
+          + (f", {skipped} skipped (no openmm)" if skipped else "")
+          + f". ALL PASSED: {all(results)}")
     print()
     return all(results)

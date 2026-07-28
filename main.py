@@ -9,7 +9,6 @@ import protein_geometry as geo
 import representations as reps
 import energy_terms as et
 import hamiltonian as ham
-import amber_hamiltonian as amber
 import vqe as vqe_mod
 import dataset as ds
 import experiments as exp
@@ -125,6 +124,7 @@ def cmd_predict(args) -> int:
     rep = reps.make_representation(args.representation, len(seq),
                                    n_states=args.states)
     if args.energy_model == "amber":
+        import amber_hamiltonian as amber   # lazy: openmm is optional
         H = amber.AmberHamiltonian(seq, rep)
     else:
         H = ham.FoldingHamiltonian(seq, rep)

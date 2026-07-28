@@ -24,7 +24,6 @@ import protein_geometry as geo
 import representations as reps
 import energy_terms as et
 import hamiltonian as ham
-import amber_hamiltonian as amber
 import vqe as vqe_mod
 import classical_baselines as cb
 import evaluation as ev
@@ -137,6 +136,10 @@ def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
     seq = entry.sequence
     rep = reps.make_representation(representation, len(seq), n_states=n_states)
     if energy_model == "amber":
+        # Imported lazily: it pulls in openmm, which is an optional dependency. At
+        # module scope it made every legacy-model run fail at import on a machine
+        # without OpenMM.
+        import amber_hamiltonian as amber
         H = amber.AmberHamiltonian(seq, rep)
     else:
         H = ham.FoldingHamiltonian(seq, rep)
