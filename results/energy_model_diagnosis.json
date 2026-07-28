@@ -1,0 +1,59 @@
+{
+  "protein": "1UAO",
+  "sequence": "GYDPETGTWG",
+  "n_residues": 10,
+  "n_states": 4,
+  "n_structures": 1048576,
+  "e_native_real": 5.513505241581298,
+  "e_native_snapped": 1.1826509484352459,
+  "native_snapped_rmsd": 2.31994222971174,
+  "ceiling_rmsd": 0.9629778226440845,
+  "n_structures_better_than_native": 126348,
+  "native_energy_percentile": 12.049484252929688,
+  "e_global_min": -2.4495551586151123,
+  "global_min_rmsd": 5.538624286651611,
+  "global_min_bitstring": "01010110000101010100",
+  "spearman_energy_vs_rmsd": -0.35052091448083833,
+  "mean_rmsd_all": 4.914139747619629,
+  "mean_rmsd_top100_by_energy": 5.163413047790527,
+  "mean_rmsd_top1000_by_energy": 5.180018424987793,
+  "best_rmsd_anywhere": 0.9629778265953064,
+  "e_at_best_rmsd": 0.41055822372436523,
+  "terms": {
+    "steric": {
+      "weight": 4.0,
+      "native": 0.0,
+      "global_min": 0.0
+    },
+    "contact": {
+      "weight": 1.0,
+      "native": 0.20115858788060811,
+      "global_min": 0.10001188727547769
+    },
+    "hbond": {
+      "weight": 1.0,
+      "native": -0.10641105748636641,
+      "global_min": 0.0
+    },
+    "solvation": {
+      "weight": 0.3,
+      "native": 4.9843469831853815,
+      "global_min": 3.076816477976722
+    },
+    "electrostatic": {
+      "weight": 0.5,
+      "native": 0.054017726507916586,
+      "global_min": 0.02317446584003265
+    },
+    "torsion": {
+      "weight": 1.0,
+      "native": 0.3611082453278854,
+      "global_min": -5.967629287637929
+    },
+    "compactness": {
+      "weight": 0.05,
+      "native": 0.019284756165873232,
+      "global_min": 0.3180712521418234
+    }
+  }
+}
