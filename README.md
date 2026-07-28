@@ -1,108 +1,96 @@
 # Peptide Structure Prediction with a Global CVaR-VQE
 
 Sequence-only structure prediction for short peptides, cast as a global Variational
-Quantum Eigensolver with a CVaR objective. The optimizer searches a discrete
-configuration space over the **entire** peptide at once (no block decomposition) and
-never reads a native structure during the search.
+Quantum Eigensolver with a CVaR objective. One circuit covers the entire peptide (no
+block decomposition), and no native structure is read during the search. Chignolin
+(`GYDPETGTWG`, PDB `1UAO`) is the primary target.
 
-Chignolin (`GYDPETGTWG`, PDB `1UAO`) is the primary target.
+The comparison the repo is built for: how do quantum and classical optimizers compare in
+scalability as peptide length grows? Four arms — lattice-VQE, torsion-VQE, simulated
+annealing, random search — search the same space against the same energy model.
 
-The comparison this repo exists to make: **how do quantum and classical optimizers
-compare in scalability as peptide length grows?** Four arms — lattice-VQE, torsion-VQE,
-simulated annealing, random search — search the same space against the same energy
-model.
+## Findings
 
-## The short answer
+All evidence is chignolin at one length, three seeds, on the legacy energy model. That
+is narrow, and the results below should not be read as general claims about VQE.
 
-**Classical wins on this problem, and the margin is large. But the binding constraint is
-the energy model, not the optimizer.**
-
-1. **On the lattice arm, annealing reaches the global optimum ~90× cheaper than the VQE.**
-   Chignolin on the tetrahedral lattice is 18 qubits — small enough to enumerate. All
-   262 144 structures were scored: the true minimum is `000000000000000000` at
-   `E = 9.847041`. Simulated annealing finds it in **185 unique energy evaluations**
-   (0.1 s); the lattice-VQE reaches the same answer in **~16 358** (17 s); random search
-   over 20 000 draws never finds it (best `34.08`).
-2. **That optimum is a straight line.** All-zeros is the fully extended tetrahedral
-   chain, 9.85 Å CA-RMSD from native against a representation ceiling of 1.94 Å. Every
-   arm that succeeds on the lattice returns it. This is a *model* failure, not a search
-   failure — the legacy energy's global minimum on this lattice is in the wrong place.
-3. **On the torsion arm at matched cost, the VQE is worst at the thing it optimizes.**
-   Mean best energy −1.306 vs annealing's −2.282 and random search's −2.153, with five
-   times the seed-to-seed spread. Plain random search beat the CVaR-VQE on every seed.
-4. **The RMSD column is a trap.** Read RMSD alone and the VQE looks best (4.33 Å vs 5.17
-   and 5.49). It is not a search win: the VQE is *failing* to minimize a known-broken
-   energy and landing nearer the native structure by accident. On a landscape whose
-   minimum is in the wrong place, worse optimization produces better structures. Quoting
-   the RMSD row as a quantum result would be exactly backwards.
-5. **Length scaling here is analytic, not measured.** The matched comparison is one
-   peptide at one length. See [Scaling](#scaling) and [Status](#status).
+- On the lattice arm, annealing reaches the global optimum in 185 unique energy
+  evaluations; the VQE needs ~16 358; random search does not find it in 20 000.
+- That optimum is a straight extended chain, 9.85 Å CA-RMSD from native against a 1.94 Å
+  representation ceiling. Every arm that succeeds returns it. The energy model, not the
+  optimizer, is what limits the result.
+- On the torsion arm at matched cost, the VQE returns the worst energy of the three
+  arms (−1.306 vs −2.282 and −2.153) with about five times the seed-to-seed spread.
+  Random search beat it on every seed.
+- The VQE has the best CA-RMSD on that arm (4.33 Å vs 5.17 and 5.49). This is not a
+  search win. It minimizes the objective least well and lands nearer the native
+  structure as a result, because the energy model's minimum is in the wrong place.
+- Length scaling is analytic only. Qubit count and memory are derived; nothing was
+  measured across lengths.
 
 ## What's here
 
 Two energy models behind one Hamiltonian interface:
 
-- **legacy** (`energy_terms.py` + `hamiltonian.py`) — fast 7-term score: steric (w 4.0),
+- **legacy** (`energy_terms.py`, `hamiltonian.py`) — 7-term score: steric (weight 4.0),
   MJ contacts (1.0), DSSP-style H-bond (1.0), torsion (1.0), electrostatic (0.5),
-  solvation (0.3), compactness (0.05). **Known broken** — natives can score worse than
-  predictions; every number below is search efficiency on a wrong landscape.
-- **amber** (`amber_hamiltonian.py`) — OpenMM Amber ff14SB with implicit-solvent GB,
+  solvation (0.3), compactness (0.05). Known to be wrong: natives can score worse than
+  predictions. Every number here is search efficiency on that landscape.
+- **amber** (`amber_hamiltonian.py`) — OpenMM ff14SB with implicit-solvent GB,
   backbone-restrained capped minimization, and a collapse floor sending GB
-  Coulomb-collapse artifacts to `+inf`. This is the comparison that would count; it has
-  not been run.
+  Coulomb-collapse artifacts to `+inf`. Not yet run.
 
-Two representations (`representations.py`), both 2 bits per slot:
+Two representations (`representations.py`), 2 bits per slot:
 
-| rep | qubits | expresses | config space |
+| rep | qubits | config space | expresses |
 | --- | --- | --- | --- |
-| **torsion** — per-residue (φ, ψ) from a 4- or 8-state library, backbone + Cβ by NeRF, sidechains by `sidechains.py` | `2N` (4-state) / `3N` (8-state) | helix, strand, turns; chiral | `n_states ** N` |
-| **lattice** — tetrahedral CA-only trace, for scaling comparisons | `2(N−1)` | no helix, β approximately, turns coarsely; achiral | `4 ** (N−1)` |
+| torsion — per-residue (φ, ψ) from a 4- or 8-state library; backbone and Cβ by NeRF, sidechains by `sidechains.py` | `2N` / `3N` | `n_states ** N` | helix, strand, turns; chiral |
+| lattice — tetrahedral CA-only trace | `2(N−1)` | `4 ** (N−1)` | β approximately, turns coarsely; achiral |
 
 Two VQE backends: **lightning** (`vqe.py`, dense statevector, ~30 qubits) and **MPS**
-(`mps/`, quimb, for registers a statevector cannot hold). Both drive the same ansatz —
-`layers` × (RY on every wire, then a CNOT chain plus ring closure) — optimized by COBYLA
-or SPSA against a CVaR-α objective over sampled bitstrings.
+(`mps/`, quimb, for larger registers). Both use the same ansatz — `layers` × (RY on
+every wire, CNOT chain, ring closure) — optimized by COBYLA or SPSA against a CVaR-α
+objective over sampled bitstrings.
 
 ## Results
 
-### Lattice arm, chignolin — verified by enumeration
+### Lattice arm, chignolin
 
-18 qubits, all 262 144 structures scored in 26 s (`classical_baselines.exhaustive_search`):
+18 qubits, so the space can be enumerated. All 262 144 structures scored in 26 s; the
+minimum is `000000000000000000` at `E = 9.847041`.
 
 | method | best energy | unique evals to reach it | runtime |
 | --- | ---: | ---: | ---: |
 | exhaustive (reference) | 9.847041 | 262 144 | 26 s |
-| simulated annealing | 9.847041 | **185** | 0.1 s |
+| simulated annealing | 9.847041 | 185 | 0.1 s |
 | lattice CVaR-VQE | 9.847041 | ~16 358 | 17 s |
-| random search | 34.079 | 20 000 (never found) | 2 s |
+| random search | 34.079 | not found in 20 000 | 2 s |
 
-All three successful arms return the same bitstring, `000000000000000000`. CA-RMSD
-9.85 Å; ceiling 1.94 Å; contact F1 0.00.
+The three successful arms return the same bitstring. CA-RMSD 9.85 Å, ceiling 1.94 Å,
+contact F1 0.00.
 
-### Torsion arm, chignolin — cost-matched
+### Torsion arm, chignolin, cost-matched
 
 Legacy model, 4-state torsion (20 qubits), seeds 0/1/2, 20 000 unique energy evaluations
 per arm (`results/main_comparison_matched.csv`):
 
-| arm | evals | best energy — *the objective* | CA-RMSD (Å) |
+| arm | evals | best energy (the objective) | CA-RMSD (Å) |
 | --- | ---: | ---: | ---: |
-| B_torsion_vqe | 19 982 | −1.306 ± 0.583 | **4.33 ± 0.66** |
-| C_torsion_sa | 20 000 | **−2.282 ± 0.118** | 5.17 ± 0.45 |
+| B_torsion_vqe | 19 982 | −1.306 ± 0.583 | 4.33 ± 0.66 |
+| C_torsion_sa | 20 000 | −2.282 ± 0.118 | 5.17 ± 0.45 |
 | D_torsion_random | 19 820 | −2.153 ± 0.061 | 5.49 ± 0.15 |
 
-Per-seed best energy — VQE −2.130 / −0.872 / −0.918; SA −2.203 / −2.194 / −2.450;
-random −2.069 / −2.213 / −2.176. Only one of three VQE seeds was competitive.
+Per-seed energy — VQE −2.130 / −0.872 / −0.918; SA −2.203 / −2.194 / −2.450; random
+−2.069 / −2.213 / −2.176. One of three VQE seeds was competitive.
 
-Cost is counted in **unique** energy evaluations (cache misses), the one
-hardware-agnostic currency: under the amber model that is one OpenMM minimization each,
-and it dominates wall-clock for every arm. This matters — annealing revisits structures
-heavily, so 20 000 SA *steps* cost only ~11–14k evaluations while 20 000 random draws
-cost ~19.8k. Same nominal budget, ~1.7× the real cost.
+Cost is counted in unique energy evaluations (cache misses), which under the amber model
+is one OpenMM minimization each and dominates wall-clock for every arm. Step counts are
+not comparable: annealing revisits structures often, so 20 000 SA steps cost ~11–14k
+evaluations while 20 000 random draws cost ~19.8k.
 
 ### Scaling
 
-`experiments.experiment_scaling_report` → `results/scaling.json`. Analytic only; no
-optimization is run.
+`experiments.experiment_scaling_report` → `results/scaling.json`. Derived, not measured.
 
 | N | lattice q | torsion-4 q | torsion-8 q | torsion-4 space | statevector |
 | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -111,10 +99,9 @@ optimization is run.
 | 15 | 28 | 30 | 45 | 1.1e9 | 17 GB |
 | 20 | 38 | 40 | 60 | 1.1e12 | 17 TB |
 
-At a 30-qubit statevector limit a genuine global VQE reaches **N ≈ 16 (lattice)**,
-**N ≈ 15 (4-state torsion)**, **N ≈ 10 (8-state torsion)**. N = 20 is not simulable
-globally. The MPS backend raises the reachable qubit count, but the configuration space
-still grows as `n_states ** N`, so nothing here changes the exponent.
+At a 30-qubit statevector limit a global VQE reaches N ≈ 16 on the lattice, N ≈ 15 on
+4-state torsion, N ≈ 10 on 8-state torsion. N = 20 is not simulable globally. MPS raises
+the reachable qubit count; the configuration space still grows as `n_states ** N`.
 
 ## Quickstart
 
@@ -125,15 +112,14 @@ python main.py --scaling     # analytic qubit / memory / config-space report
 python main.py --predict --sequence GYDPETGTWG
 ```
 
-> **`main.py` requires `openmm` for every subcommand**, including the ones that never
-> touch the Amber model. `main.py:12` imports `amber_hamiltonian`, which imports
-> `openmm` at module scope, so without it even `--scaling` dies on import. The library
-> modules themselves are fine — `representations`, `hamiltonian`, `vqe`,
-> `classical_baselines` and `evaluation` import cleanly and were used directly for the
-> lattice results above.
+`main.py` requires `openmm` for every subcommand, including those that never use the
+Amber model: `main.py:12` imports `amber_hamiltonian`, which imports `openmm` at module
+scope. Without it, `--scaling` fails on import. The library modules are unaffected —
+`representations`, `hamiltonian`, `vqe`, `classical_baselines` and `evaluation` import
+cleanly and produced the lattice results above.
 
 `--predict` prints the VQE solution, distribution stats, and (legacy model) a weighted
-energy breakdown vs a known native, then writes `results/prediction.pdb`.
+energy breakdown against a known native, then writes `results/prediction.pdb`.
 
 ## Repository layout
 
@@ -141,71 +127,51 @@ energy breakdown vs a known native, then writes `results/prediction.pdb`.
 | --- | --- |
 | `protein_geometry.py` | Backbone/NeRF geometry, Kabsch/RMSD, PDB IO, DSSP, torsions |
 | `sidechains.py` | Fixed-chi heavy-atom sidechains (G A S T D E N K P Y W) |
-| `representations.py` | Torsion-state library + tetrahedral lattice; `make_representation` |
+| `representations.py` | Torsion-state library, tetrahedral lattice, `make_representation` |
 | `energy_terms.py`, `hamiltonian.py` | Legacy 7-term energy and `FoldingHamiltonian` |
 | `amber_hamiltonian.py`, `amber_obc2.py` | OpenMM ff14SB + GBn2 with collapse floor; OBC2-native variant |
-| `vqe.py` | CVaR objective, global ansatz, lightning CVaR-VQE loop |
-| `mps/` | `MPSSampler` + MPS driver (pluggable sampler, collapse audit) |
+| `vqe.py` | CVaR objective, global ansatz, lightning VQE loop |
+| `mps/` | `MPSSampler` and MPS driver |
 | `classical_baselines.py` | Random search, simulated annealing, exhaustive search |
-| `evaluation.py` | Representation ceiling + predicted-vs-native metrics |
+| `evaluation.py` | Representation ceiling and predicted-vs-native metrics |
 | `dataset.py` | PDB download/cache, peptide dataset, identity clustering |
-| `experiments.py` | Experiment drivers + CSV IO (`run_one`, comparison, ablations, scaling) |
+| `experiments.py` | Experiment drivers and CSV IO |
 | `validation.py` | 35-test correctness/leakage suite (`run_all`) |
 | `main.py`, `plot_structures.py` | CLI entry point; 3D structure plots |
-| `budget.py` | Shared evaluation-budget accounting — **written but not wired in** (see Status) |
-| `run_8state_seed0.py` | Driver for the 8-state OBC2-native chignolin seed-0 run |
-| `pdbs/`, `results/`, `docs/` | Cached PDBs; generated data and figures; design notes |
+| `budget.py` | Shared evaluation-budget accounting; not wired in (see Status) |
+| `run_8state_seed0.py` | 8-state OBC2-native chignolin seed-0 run |
+| `pdbs/`, `results/`, `docs/` | Cached PDBs; generated data; design notes |
 
-## Properties the suite pins
-
-- **Determinism.** With fixed seeds every energy and selection reproduces bit-for-bit
-  (the suite asserts Amber energy spread `0.000e+00`).
-- **No native leakage.** The Hamiltonians take no native structure, and `run_one` asserts
-  no PDB was read during optimization.
-- **Global, not blockwise.** `test_vqe_is_full_system` pins one circuit over all qubits;
-  `test_vqe_does_not_enumerate` pins that the search never enumerates the space.
-- **VQE optimality on an enumerable system.** `test_vqe_matches_exhaustive_on_tiny_system`
-  — exact −2.9608, VQE −2.9608, gap 0.0000. Independently reproduced here at 14 qubits:
-  exhaustive, SA, random and VQE all reach −1.0649 on `GYDPETG`.
-- **The ceiling is a real ceiling.** `representation_ceiling` reports the best RMSD the
-  representation could express, so a result is never credited past what the encoding
-  allows.
+The suite pins determinism under fixed seeds, absence of native leakage during
+optimization, that the VQE is global rather than blockwise, that it does not enumerate,
+and that it matches exhaustive search on an enumerable system.
 
 ## Status
 
-Verified in this environment (Python 3.14, numpy 2.5.1, scipy 1.18, PennyLane 0.45.1,
-biopython 1.87):
+Verified here (Python 3.14, numpy 2.5.1, scipy 1.18, PennyLane 0.45.1, biopython 1.87):
+the lattice enumeration and per-method costs above, and VQE matching exhaustive search
+at 14 qubits on `GYDPETG` (−1.0649, also matched by SA and random search).
 
-- The lattice enumeration and per-method costs in [Results](#results).
-- Core library imports and runs; VQE matches exhaustive search at 14 qubits.
+Open gaps:
 
-Known gaps, in the order they should be closed:
-
-1. **`budget.py` is not wired to anything.** No module imports it — `FoldingHamiltonian`
-   and `AmberHamiltonian` still carry their own uncapped counters, and
-   `experiment_main_comparison` takes no `eval_budget`. `docs/evaluation-budget.md`
-   describes the wiring, the `config_id` stamping, the `check_optimizer_budget` guard and
-   five new validation tests as landed; **none of that is in the committed source.**
-   `results/main_comparison_matched.csv` therefore cannot be regenerated by this code as
-   it stands.
-2. **`--validate` cannot run without `openmm`** (module-scope import chain, above), so
-   the 35-test suite is unrun here. The doc's "35/35 passed" predates that.
-3. **The Amber and MPS paths are unexecuted** — neither `openmm` nor `quimb` is
-   installed. The Amber comparison is the one that counts.
-4. **`results/main_comparison.csv` is stale** — unmatched budgets, mixed `maxiter`/
-   `restarts` configs interleaved as one experiment, and every row seed 0 despite the
-   summary printing "± std across seeds". Superseded by `main_comparison_matched.csv`;
-   should be regenerated or deleted.
-5. **No length sweep.** The matched comparison is a single peptide at N = 10. The
-   headline scalability question is answered analytically for qubits and memory but
-   empirically at one point; a sweep over N with cost-matched arms is the missing
-   experiment.
-6. **The VQE has not been retuned** for a fair budget. `alpha`, `layers` and
-   COBYLA-vs-SPSA were all chosen under the old per-arm regime; these numbers describe
-   this configuration, not the method.
+1. `budget.py` is imported by nothing. Both Hamiltonians keep their own uncapped
+   counters and `experiment_main_comparison` takes no budget argument. The wiring,
+   `config_id` stamping, optimizer guard and five tests that `docs/evaluation-budget.md`
+   describes as landed are not in the source, so `main_comparison_matched.csv` cannot be
+   regenerated by this code.
+2. `--validate` cannot run without `openmm`, so the 35-test suite is unrun here. The
+   "35/35 passed" in the docs predates the current tree.
+3. The Amber and MPS paths are unexecuted; neither `openmm` nor `quimb` is installed.
+   The Amber comparison is the one that matters.
+4. `results/main_comparison.csv` is stale: unmatched budgets, mixed `maxiter`/`restarts`
+   configs interleaved, and every row seed 0 despite the summary printing a standard
+   deviation across seeds. Superseded by `main_comparison_matched.csv`.
+5. There is no length sweep. A cost-matched sweep over N is the missing experiment.
+6. The VQE has not been retuned for a matched budget. `alpha`, `layers` and
+   COBYLA-vs-SPSA were chosen under the earlier per-arm regime.
 
 ## Dependencies
 
-`numpy`, `scipy`, `pennylane` + `pennylane-lightning` (lightning backend), `quimb` (MPS
-backend), `biopython` (PDB parsing), `matplotlib` (plots), `openmm` (Amber energy model,
-and currently an unconditional import for `main.py`). All pinned in `requirements.txt`.
+`numpy`, `scipy`, `pennylane` + `pennylane-lightning`, `quimb` (MPS), `biopython` (PDB
+parsing), `matplotlib`, `openmm` (Amber model, and currently an unconditional import for
+`main.py`). Pinned in `requirements.txt`.
