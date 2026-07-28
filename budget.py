@@ -25,10 +25,55 @@ A run must be able to report its answer even after the optimizer has spent every
 search; ``release()`` hands them back for the final read-out. Charges still stop at the
 hard limit, so the reserve bounds the read-out rather than exempting it.
 """
+import warnings
 from typing import Dict, Optional
 
 
-__all__ = ["BudgetExhausted", "BudgetedEnergyModel"]
+__all__ = ["BudgetExhausted", "BudgetedEnergyModel", "resolve_maxiter",
+           "check_optimizer_budget"]
+
+#: ``maxiter=None`` resolves to this multiple of the parameter count -- deliberately
+#: high, so the shared evaluation budget is what terminates the search rather than the
+#: optimizer allowance. See the module docstring.
+MAXITER_PER_PARAM = 50
+
+#: Hard floor. Below this a COBYLA run is mostly (or entirely) simplex construction.
+MIN_MAXITER_PER_PARAM = 3
+
+
+def resolve_maxiter(maxiter: Optional[int], n_params: int) -> int:
+    """``None`` -> ``MAXITER_PER_PARAM x n_params``; an explicit value passes through."""
+    if maxiter is None:
+        return MAXITER_PER_PARAM * int(n_params)
+    return int(maxiter)
+
+
+def check_optimizer_budget(maxiter: int, n_params: int, optimizer: str,
+                           eval_budget: Optional[int] = None) -> None:
+    """Reject optimizer allowances that cannot actually optimize.
+
+    The old check was ``maxiter >= n_params + 2``, which passes any configuration that
+    can merely *construct* a COBYLA simplex -- ``run_8state_seed0.py`` at 120 parameters
+    and ``maxiter=200`` spends its first 121 evaluations building one, leaving ~79
+    trust-region steps in 120 dimensions. This errors below ``3 x n_params`` instead, and
+    warns when ``maxiter`` is what binds because no shared budget was set (in which case
+    the arms are not cost-matched and the comparison is not sound).
+    """
+    n_params = int(n_params)
+    floor = MIN_MAXITER_PER_PARAM * n_params
+    if optimizer.upper() == "COBYLA" and maxiter < floor:
+        raise ValueError(
+            f"maxiter={maxiter} is below {MIN_MAXITER_PER_PARAM}x n_params = {floor} "
+            f"for {n_params} parameters. COBYLA spends its first n_params + 1 = "
+            f"{n_params + 1} evaluations building an initial simplex, so this "
+            "configuration does almost no optimizing. Raise maxiter, reduce layers, or "
+            "pass maxiter=None to let the shared evaluation budget bind instead.")
+    if eval_budget is None:
+        warnings.warn(
+            f"no shared eval_budget set, so maxiter={maxiter} is what terminates this "
+            "search. Cost is then configured per-arm and the arms are NOT cost-matched; "
+            "any quantum-vs-classical comparison drawn from them is unsound.",
+            RuntimeWarning, stacklevel=2)
 
 
 class BudgetExhausted(RuntimeError):

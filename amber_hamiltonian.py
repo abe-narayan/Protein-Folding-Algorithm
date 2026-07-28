@@ -10,6 +10,7 @@ from openmm import app, unit
 
 import protein_geometry as geo
 import sidechains as sc
+from budget import BudgetedEnergyModel
 
 
 __all__ = ["AmberHamiltonian", "KCAL_PER_KJ", "AMBER_TERMS"]
@@ -30,7 +31,7 @@ RESTRAINED_BACKBONE = ("N", "CA", "C")
 _NON_FRAME_ATOMS = ("O", "OXT")
 
 
-class AmberHamiltonian:
+class AmberHamiltonian(BudgetedEnergyModel):
 
 
     def __init__(self, sequence: str, representation,
@@ -41,7 +42,8 @@ class AmberHamiltonian:
                  cache_limit: int = 500_000,
                  platform_name: str = "CPU",
                  reference_states: Optional[Sequence[int]] = None,
-                 collapse_floor: float = -600.0):
+                 collapse_floor: float = -600.0,
+                 eval_budget: Optional[int] = None):
         self.sequence = sequence.strip().upper()
         self.rep = representation
         if len(self.sequence) != self.rep.n_residues:
@@ -59,9 +61,7 @@ class AmberHamiltonian:
         self.minimization_tolerance = float(minimization_tolerance)
         self.collapse_floor = float(collapse_floor)
 
-        self._cache: Dict[str, float] = {}
-        self._cache_limit = int(cache_limit)
-        self.n_energy_evaluations = 0
+        self._init_budget(cache_limit, eval_budget)
         self.t_build = 0.0
         self.t_minimize = 0.0
         self.t_energy = 0.0
@@ -338,12 +338,12 @@ class AmberHamiltonian:
                 f"bitstring length {len(bitstring)} != n_bits {self.rep.n_bits}")
         hit = self._cache.get(bitstring)
         if hit is not None:
-            return hit
+            return hit                  # cache hits are free
+        self._charge()                  # raises BudgetExhausted before minimizing
         heavy = self._heavy_positions(self.rep.build_coords(bitstring))
         e, _, _ = self._evaluate(heavy)
         if len(self._cache) < self._cache_limit:
             self._cache[bitstring] = e
-        self.n_energy_evaluations += 1
         return e
 
     def components(self, bitstring: str) -> Dict[str, float]:
@@ -374,11 +374,8 @@ class AmberHamiltonian:
         return pre, post
 
     def reset_counters(self) -> None:
-        self.n_energy_evaluations = 0
+        super().reset_counters()
         self.t_build = self.t_minimize = self.t_energy = 0.0
-
-    def cache_size(self) -> int:
-        return len(self._cache)
 
     def describe(self) -> Dict[str, object]:
         return {

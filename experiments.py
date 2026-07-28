@@ -41,7 +41,10 @@ CSV_FIELDS = [
     "energy_gap", "ca_rmsd_angstrom", "backbone_rmsd_angstrom",
     "ceiling_ca_rmsd", "contact_f1", "longrange_contact_recall",
     "ss_agreement", "ss_predicted", "ss_native",
-    "n_energy_evaluations", "n_objective_evals", "runtime",
+    "n_energy_evaluations", "n_objective_evals",
+    "eval_budget", "budget_exhausted", "terminated_by", "restarts_completed",
+    "n_parameters", "maxiter_requested", "maxiter_resolved",
+    "maxiter_over_n_params", "runtime",
     "distribution_top1_prob", "distribution_entropy_bits",
     "vqe_bitstring", "best_seen_bitstring",
 ]
@@ -109,12 +112,18 @@ def _dispatch(tasks: List[Dict], n_workers: int, worker=_run_one_task):
         return list(pool.imap(worker, [dict(t) for t in tasks]))
 
 
+#: Unique energy evaluations every arm is allowed. This is the currency the comparison
+#: is denominated in: under the amber model one evaluation is one OpenMM
+#: backbone-restrained minimization, and it dominates wall-clock for every arm.
+DEFAULT_EVAL_BUDGET = 20_000
+
+
 def default_vqe_config() -> Dict:
     return {
         "layers": 4,
         "alpha": 0.15,
         "shots": 2048,
-        "maxiter": 300,
+        "maxiter": None,        # resolves to 50 x n_params; the budget is what binds
         "restarts": 4,
         "optimizer": "COBYLA",
         "final_shots": 8192,
@@ -128,6 +137,7 @@ def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
             method: str = "vqe",
             energy_model: str = "legacy",
             sa_steps: Optional[int] = None,
+            eval_budget: Optional[int] = DEFAULT_EVAL_BUDGET,
             verbose: bool = True) -> Dict:
 
     if energy_model not in ("legacy", "amber"):
@@ -135,14 +145,15 @@ def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
     cfg = dict(default_vqe_config() if vqe_config is None else vqe_config)
     seq = entry.sequence
     rep = reps.make_representation(representation, len(seq), n_states=n_states)
+    # The SAME budget goes to every arm through the Hamiltonian each one shares.
     if energy_model == "amber":
         # Imported lazily: it pulls in openmm, which is an optional dependency. At
         # module scope it made every legacy-model run fail at import on a machine
         # without OpenMM.
         import amber_hamiltonian as amber
-        H = amber.AmberHamiltonian(seq, rep)
+        H = amber.AmberHamiltonian(seq, rep, eval_budget=eval_budget)
     else:
-        H = ham.FoldingHamiltonian(seq, rep)
+        H = ham.FoldingHamiltonian(seq, rep, eval_budget=eval_budget)
 
     if verbose:
         d = rep.describe()
@@ -158,7 +169,12 @@ def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
         chosen = res["vqe_bitstring"]
         n_obj = res["n_objective_evals_total"]
     elif method == "sa":
-        steps = sa_steps if sa_steps is not None else 20000
+        # Enough steps that the shared BUDGET is what stops it, not the step count.
+        # Annealing revisits heavily -- 20,000 SA steps spent only ~11-14k unique
+        # evaluations while 20,000 random draws spent ~19.8k, so a matched step count
+        # is a ~1.7x cost mismatch. Revisits are cache hits, so the headroom is cheap.
+        steps = sa_steps if sa_steps is not None else (
+            20 * eval_budget if eval_budget else 20000)
         res = cb.simulated_annealing(H, n_steps=steps, seed=seed)
         chosen = res["best_bitstring"]
         res["vqe_energy"] = res["best_energy"]
@@ -168,9 +184,10 @@ def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
         res["best_seen_bitstring"] = chosen
         res["distribution_top1_prob"] = float("nan")
         res["distribution_entropy_bits"] = float("nan")
-        n_obj = steps
+        n_obj = res["n_objective_evals"]
     elif method == "random":
-        n = sa_steps if sa_steps is not None else 20000
+        n = sa_steps if sa_steps is not None else (
+            2 * eval_budget if eval_budget else 20000)
         res = cb.random_search(H, n_samples=n, seed=seed)
         chosen = res["best_bitstring"]
         res["vqe_energy"] = res["best_energy"]
@@ -187,6 +204,12 @@ def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
     opt_runtime = time.time() - t0
     assert len(geo.get_pdb_log()) == 0, \
         "LEAKAGE: a native PDB was read during optimization"
+
+    # Everything below is post-hoc analysis -- metrics, native comparisons, energy
+    # breakdowns. It must not be billed to the search budget, and must not be able to
+    # fail once the budget is spent. The spent count is preserved for reporting.
+    spent = H.n_energy_evaluations
+    H.end_search()
 
     native_seq, native_coords, native_phi, native_psi = ds.load_native(entry)
     metrics = ev.evaluate_structure(chosen, rep, H, native_seq, native_coords,
@@ -219,8 +242,16 @@ def run_one(entry: ds.PeptideEntry, representation: str = "torsion",
         "ss_agreement": metrics["ss_agreement"],
         "ss_predicted": metrics["ss_predicted"],
         "ss_native": ss_native,
-        "n_energy_evaluations": res.get("n_energy_evaluations"),
+        "n_energy_evaluations": spent,
         "n_objective_evals": n_obj,
+        "eval_budget": eval_budget,
+        "budget_exhausted": (eval_budget is not None and spent >= eval_budget),
+        "terminated_by": res.get("terminated_by", ""),
+        "restarts_completed": res.get("restarts_completed", ""),
+        "n_parameters": res.get("n_parameters", ""),
+        "maxiter_requested": cfg.get("maxiter"),
+        "maxiter_resolved": res.get("maxiter_resolved", ""),
+        "maxiter_over_n_params": res.get("maxiter_over_n_params", ""),
         "runtime": opt_runtime,
         "distribution_top1_prob": res.get("distribution_top1_prob"),
         "distribution_entropy_bits": res.get("distribution_entropy_bits"),
@@ -243,7 +274,8 @@ def experiment_main_comparison(entries: List[ds.PeptideEntry],
                                vqe_config: Optional[Dict] = None,
                                energy_model: str = "legacy",
                                csv_name: str = "main_comparison.csv",
-                               n_workers: Optional[int] = None) -> List[Dict]:
+                               n_workers: Optional[int] = None,
+                               eval_budget: Optional[int] = DEFAULT_EVAL_BUDGET) -> List[Dict]:
 
     path = os.path.join(_ensure_results_dir(), csv_name)
     cfg = dict(default_vqe_config() if vqe_config is None else vqe_config)
@@ -276,10 +308,12 @@ def experiment_main_comparison(entries: List[ds.PeptideEntry],
                 tasks.append(dict(_label=arm_name, entry=entry,
                                   representation=rep_kind, n_states=n_states,
                                   seed=seed, vqe_config=cfg, method=method,
-                                  energy_model=energy_model))
+                                  energy_model=energy_model,
+                                  eval_budget=eval_budget))
 
     n_workers = resolve_workers(n_workers)
-    print(f"\n  {len(tasks)} runs over {n_workers} worker(s)")
+    print(f"\n  {len(tasks)} runs over {n_workers} worker(s), "
+          f"shared budget {eval_budget} unique energy evaluations per arm")
     for row, err in _dispatch(tasks, n_workers):
         if err is not None:
             print(f"    {err}")
@@ -288,6 +322,7 @@ def experiment_main_comparison(entries: List[ds.PeptideEntry],
         rows.append(row)
 
     _print_summary(rows)
+    _check_cost_matched(rows)
     print(f"\n  results written to {path}")
     return rows
 
@@ -320,11 +355,46 @@ def _print_summary(rows: List[Dict]) -> None:
         print()
 
 
+def _check_cost_matched(rows: List[Dict]) -> bool:
+    """Refuse to present arms that were not given the same allowance.
+
+    The soundness condition is an equal *allowance*, not equal *spend*: an arm that
+    converges and stops early has gained no advantage. So unequal or absent
+    ``eval_budget`` is an error, while spend spread is reported as information --
+    under-spending arms terminated before exhausting the budget, which is itself a
+    finding about optimizer choice.
+    """
+    if not rows:
+        return True
+    print("  COST MATCHING")
+    budgets = {r.get("eval_budget") for r in rows}
+    if None in budgets or "" in budgets:
+        print("    !! at least one arm ran with NO shared budget -- cost is configured")
+        print("       per-arm and the comparison is UNSOUND.")
+        return False
+    if len(budgets) > 1:
+        print(f"    !! arms were given DIFFERENT budgets {sorted(budgets)} -- "
+              "the comparison is UNSOUND.")
+        return False
+    budget = budgets.pop()
+    spend = {r["method"]: int(r["n_energy_evaluations"]) for r in rows}
+    lo, hi = min(spend.values()), max(spend.values())
+    print(f"    equal allowance: {budget} unique energy evaluations to every arm  [OK]")
+    print(f"    actual spend   : {lo}-{hi}"
+          + (f" ({hi / max(1, lo):.2f}x spread)" if lo else ""))
+    under = {m: v for m, v in spend.items() if v < 0.95 * budget}
+    if under:
+        print("    under-spending arms terminated before exhausting the budget: "
+              + ", ".join(f"{m} ({v})" for m, v in sorted(under.items())))
+    return True
+
+
 def experiment_energy_ablation(entries: List[ds.PeptideEntry],
                                seeds: List[int],
                                vqe_config: Optional[Dict] = None,
                                csv_name: str = "energy_ablation.csv",
-                               n_workers: Optional[int] = None) -> List[Dict]:
+                               n_workers: Optional[int] = None,
+                               eval_budget: Optional[int] = DEFAULT_EVAL_BUDGET) -> List[Dict]:
 
     path = os.path.join(_ensure_results_dir(), csv_name)
     cfg = dict(default_vqe_config() if vqe_config is None else vqe_config)
@@ -342,7 +412,7 @@ def experiment_energy_ablation(entries: List[ds.PeptideEntry],
     variants.append(("raw_mj", dict(et.DEFAULT_WEIGHTS), False))
 
     tasks = [dict(_label=name, weights=weights, corrected=corrected,
-                  entry=entry, seed=seed, cfg=cfg)
+                  entry=entry, seed=seed, cfg=cfg, eval_budget=eval_budget)
              for name, weights, corrected in variants
              for entry in entries for seed in seeds]
 
@@ -375,12 +445,15 @@ def _run_ablation_task(task: Dict):
         seq = entry.sequence
         rep = reps.TorsionStateRepresentation(len(seq), n_states=4)
         H = ham.FoldingHamiltonian(seq, rep, weights=weights,
-                                   use_corrected_mj=corrected)
+                                   use_corrected_mj=corrected,
+                                   eval_budget=task["eval_budget"])
         geo.reset_pdb_log()
         t0 = time.time()
         res = vqe_mod.run_global_cvar_vqe(H, seed=seed, **cfg)
         rt = time.time() - t0
         assert len(geo.get_pdb_log()) == 0, "LEAKAGE during ablation"
+        spent = H.n_energy_evaluations
+        H.end_search()
 
         nseq, ncoords, nphi, npsi = ds.load_native(entry)
         m = ev.evaluate_structure(res["vqe_bitstring"], rep, H,
@@ -408,8 +481,11 @@ def _run_ablation_task(task: Dict):
                     "ss_agreement": m["ss_agreement"],
                     "ss_predicted": m["ss_predicted"],
                     "ss_native": geo.assign_secondary_structure(ncoords),
-                    "n_energy_evaluations": res["n_energy_evaluations"],
+                    "n_energy_evaluations": spent,
                     "n_objective_evals": res["n_objective_evals_total"],
+                    "eval_budget": task["eval_budget"],
+                    "terminated_by": res.get("terminated_by", ""),
+                    "restarts_completed": res.get("restarts_completed", ""),
                     "runtime": rt,
                     "distribution_top1_prob": res["distribution_top1_prob"],
                     "distribution_entropy_bits": res["distribution_entropy_bits"],
@@ -426,7 +502,8 @@ def _run_ablation_task(task: Dict):
 
 def experiment_vqe_hyperparameters(entry: ds.PeptideEntry, seeds: List[int],
                                    csv_name: str = "vqe_hparams.csv",
-                                   n_workers: Optional[int] = None) -> List[Dict]:
+                                   n_workers: Optional[int] = None,
+                                   eval_budget: Optional[int] = DEFAULT_EVAL_BUDGET) -> List[Dict]:
 
     path = os.path.join(_ensure_results_dir(), csv_name)
     rows = []
@@ -446,10 +523,12 @@ def experiment_vqe_hyperparameters(entry: ds.PeptideEntry, seeds: List[int],
         tag = f"a{cfg['alpha']}_L{cfg['layers']}_{cfg['optimizer']}"
         for seed in seeds:
             tasks.append(dict(_label=tag, entry=entry, representation="torsion",
-                              n_states=4, seed=seed, vqe_config=cfg, method="vqe"))
+                              n_states=4, seed=seed, vqe_config=cfg, method="vqe",
+                              eval_budget=eval_budget))
 
     n_workers = resolve_workers(n_workers)
-    print(f"\n  {len(tasks)} runs over {n_workers} worker(s)")
+    print(f"\n  {len(tasks)} runs over {n_workers} worker(s), "
+          f"shared budget {eval_budget} unique energy evaluations per arm")
     for row, err in _dispatch(tasks, n_workers):
         if err is not None:
             print(f"    {err}")
@@ -458,6 +537,7 @@ def experiment_vqe_hyperparameters(entry: ds.PeptideEntry, seeds: List[int],
         rows.append(row)
 
     _print_summary(rows)
+    _check_cost_matched(rows)
     print(f"\n  results written to {path}")
     return rows
 

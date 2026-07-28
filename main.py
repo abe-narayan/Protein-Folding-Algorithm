@@ -172,7 +172,8 @@ def cmd_main_comparison(args) -> int:
                maxiter=args.maxiter, restarts=args.restarts)
     exp.experiment_main_comparison(entries, args.seeds, vqe_config=cfg,
                                    energy_model=args.energy_model,
-                                   n_workers=args.workers)
+                                   n_workers=args.workers,
+                                   eval_budget=args.eval_budget)
     return 0
 
 def cmd_energy_ablation(args) -> int:
@@ -183,7 +184,8 @@ def cmd_energy_ablation(args) -> int:
     cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
                maxiter=args.maxiter, restarts=args.restarts)
     exp.experiment_energy_ablation(entries, args.seeds, vqe_config=cfg,
-                                   n_workers=args.workers)
+                                   n_workers=args.workers,
+                                   eval_budget=args.eval_budget)
     return 0
 
 
@@ -192,7 +194,8 @@ def cmd_hparams(args) -> int:
     if not entries:
         return 1
     exp.experiment_vqe_hyperparameters(entries[0], args.seeds,
-                                       n_workers=args.workers)
+                                       n_workers=args.workers,
+                                       eval_budget=args.eval_budget)
     return 0
 
 
@@ -221,9 +224,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--layers", type=int, default=4)
     p.add_argument("--alpha", type=float, default=0.15)
     p.add_argument("--shots", type=int, default=2048)
-    p.add_argument("--maxiter", type=int, default=300)
+    p.add_argument("--maxiter", type=int, default=None,
+                   help="optimizer allowance; default None resolves to 50 x n_params "
+                        "so the shared --eval-budget is what terminates the search")
     p.add_argument("--restarts", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--eval-budget", type=int, default=exp.DEFAULT_EVAL_BUDGET,
+                   help="unique energy evaluations allowed to EACH arm (default "
+                        "20000). This is what makes the arms cost-comparable; "
+                        "0 disables it and makes any comparison unsound.")
     p.add_argument("--workers", type=int, default=None,
                    help="processes to fan the experiment loop across "
                         "(default 1 = serial, or $PFA_WORKERS; 0 = cores - 2). "
@@ -238,6 +247,8 @@ def main() -> int:
     args.seeds = _parse_ints(args.seeds)
     args.proteins = _parse_strs(args.proteins)
     args.protein = args.protein.strip().upper()
+    if args.eval_budget is not None and args.eval_budget <= 0:
+        args.eval_budget = None
 
     ran = False
     rc = 0
