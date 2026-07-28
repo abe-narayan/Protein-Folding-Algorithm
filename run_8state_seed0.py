@@ -1,23 +1,7 @@
-"""8-state chignolin CVaR-VQE, seed 0, config A (layers 4 / maxiter 200 /
-restarts 3 / shots 1024), default STATES_8 torsion library, MPS backend, OBC2-native
-solvation tier.
 
-The collapse audit is pure observation (the source floor sends collapses to +inf, so
-they cannot enter the CVaR low tail or be selected). Reports the selected energy, the
-audit verdict, CA-RMSD vs the 4-state 4.80 A and the 8-state ceiling, and the
-native-vs-prediction energy gap.
-
-This is the driver that produced the persisted seed-0 evaluation set. Run with the
-interpreter that owns openmm + quimb, e.g.:
-
-    PYTHONPATH=<repo> python run_8state_seed0.py
-"""
 import os
 
-# REC 4: pin numeric-library thread pools to 1 BEFORE numpy/OpenBLAS initialise their
-# pools (must precede `import numpy`). Zero result change; avoids BLAS oversubscription
-# and is the free enabler for the REC 1/2 process parallelism. mps.parallel.pin_threads
-# is the same logic used inside worker initializers.
+
 for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS",
            "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
     os.environ[_v] = "1"

@@ -1,22 +1,4 @@
-"""Build an :class:`amber_hamiltonian.AmberHamiltonian` on the OBC2 implicit
-solvent using OpenMM's native :class:`GBSAOBCForce` instead of the ff14SB default
-(``implicit/gbn2.xml`` -> ``CustomGBForce``).
 
-The native GBSAOBCForce is ~6-7x faster than the CustomGBForce path and is what the
-STATES_8 chignolin seed-0 evaluation set was generated with. This is the single
-source of truth for that construction (previously copy-pasted into several
-``scratch/`` scripts).
-
-The construction is deliberately verbatim so its energies stay byte-identical to the
-persisted seed-0 data:
-
-1. Temporarily swap ``implicit/gbn2.xml`` -> ``implicit/obc2.xml`` while the
-   AmberHamiltonian builds its ForceField (monkeypatch, restored in ``finally``).
-2. Replace the resulting ``CustomGBForce`` with a ``GBSAOBCForce`` carrying the same
-   per-particle charge/radius/scale (with the standard +0.009 nm radius offset and
-   scale = scaledRadius / offsetRadius), force group 5, NoCutoff.
-3. Rebuild the OpenMM ``Context`` so the swapped force is live.
-"""
 import openmm
 from openmm import app, unit
 

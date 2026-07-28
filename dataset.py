@@ -12,8 +12,7 @@ import protein_geometry as geo
 BASE = os.path.dirname(os.path.abspath(__file__))
 PDB_DIR = os.path.join(BASE, "pdbs")
 
-# Curated 10-20mers with well-resolved experimental structures, spanning
-# beta-hairpin, alpha-helix, and mixed topologies.
+
 CANDIDATE_PDB_IDS = [
     "1UAO",   # chignolin, 10, beta-hairpin
     "5AWL",   # CLN025, 10, beta-hairpin
