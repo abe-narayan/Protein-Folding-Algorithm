@@ -1,5 +1,5 @@
 import math
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -8,8 +8,9 @@ import protein_geometry as geo
 
 __all__ = [
     "build_sidechain", "build_full_structure", "sidechain_atom_names",
-    "residue_bonds", "heavy_atom_count", "write_full_pdb",
-    "SUPPORTED_RESIDUES", "CHI_ANGLES", "NotImplementedResidueError",
+    "residue_bonds", "heavy_atom_count", "write_full_pdb", "ring_atom_names",
+    "SUPPORTED_RESIDUES", "CHI_ANGLES", "CHI1_ROTAMERS", "AROMATIC_RING_RESIDUES",
+    "NotImplementedResidueError",
 ]
 
 
@@ -21,7 +22,7 @@ THREE = dict(geo.ONE_TO_THREE)
 ONE = dict(geo.THREE_TO_ONE)
 
 SUPPORTED_RESIDUES = ("GLY", "ALA", "SER", "THR", "ASP", "GLU",
-                      "ASN", "LYS", "PRO", "TYR", "TRP")
+                      "ASN", "LYS", "PRO", "PHE", "TYR", "TRP")
 
 
 CHI_ANGLES: Dict[str, Tuple[float, ...]] = {
@@ -31,12 +32,30 @@ CHI_ANGLES: Dict[str, Tuple[float, ...]] = {
     "ASN": (-65.0, -20.0),
     "GLU": (-67.0, 180.0, -10.0),
     "LYS": (-67.0, 180.0, 180.0, 180.0),
+    "PHE": (-65.0, -85.0),
     "TYR": (-65.0, -85.0),
     "TRP": (-65.0, -90.0),
     "PRO": (),
     "ALA": (),
     "GLY": (),
 }
+
+#: The two dominant chi1 rotamers for aromatic sidechains: m (gauche-, ~50% of observed
+#: rotamers) and t (trans, ~35%). One bit per aromatic residue selects between them.
+#:
+#: Index 0 reproduces `CHI_ANGLES` exactly, so a representation with chi encoding disabled
+#: -- or with every chi bit zero -- builds the identical structure it always did. That is
+#: what keeps the pinned golden runs reproducible.
+CHI1_ROTAMERS: Dict[str, Tuple[float, ...]] = {
+    "PHE": (-65.0, 180.0),
+    "TYR": (-65.0, 180.0),
+    "TRP": (-65.0, 180.0),
+}
+
+#: Aromatic residues whose ring this module can build, so real ring geometry (centroid,
+#: normal) is available to the energy. Histidine is aromatic but its imidazole template is
+#: not implemented, so His falls back to the CB proxy in `energy_terms.aromatic_term`.
+AROMATIC_RING_RESIDUES = ("PHE", "TYR", "TRP")
 
 
 _SPECS: Dict[str, List[Tuple[str, Tuple[str, str, str], float, float, object]]] = {
@@ -106,11 +125,36 @@ _RING_TEMPLATES: Dict[str, Dict[str, Tuple[float, float]]] = {
     },
 }
 
+# Phenylalanine is tyrosine's ring without the para hydroxyl. Reusing the same template
+# rather than writing new coordinates means it inherits TYR's verified planarity (RMS
+# deviation < 1e-6 A) and bond lengths (< 0.02 A of ideal) for free.
+_RING_TEMPLATES["PHE"] = {k: v for k, v in _RING_TEMPLATES["TYR"].items() if k != "OH"}
+
 _RING_ANCHOR = {
     #        bond CB-CG, angle CA-CB-CG, bond CG-CD1, angle CB-CG-CD1
+    "PHE": (1.502, 113.8, 1.389, 120.8),
     "TYR": (1.512, 113.8, 1.389, 120.8),
     "TRP": (1.498, 113.6, 1.365, 126.9),
 }
+
+#: Ring atoms, in template order, for the residues whose rings can be built. These are the
+#: atoms `energy_terms` uses to compute a ring centroid and normal, which is what makes a
+#: real pi-stacking geometry available instead of a CB-CB proxy.
+_RING_ATOMS: Dict[str, Tuple[str, ...]] = {
+    "PHE": ("CG", "CD1", "CD2", "CE1", "CE2", "CZ"),
+    "TYR": ("CG", "CD1", "CD2", "CE1", "CE2", "CZ"),
+    # The indole's two fused rings are coplanar, so the whole nine-atom system defines one
+    # plane and one centroid -- which is also how indole stacking is usually described.
+    "TRP": ("CG", "CD1", "CD2", "NE1", "CE2", "CE3", "CZ2", "CZ3", "CH2"),
+}
+
+
+def ring_atom_names(resname: str) -> Tuple[str, ...]:
+    """Ring atom names for an aromatic residue, or () if its ring is not implemented."""
+    key = str(resname).strip().upper()
+    if len(key) == 1:
+        key = THREE.get(key, key)
+    return _RING_ATOMS.get(key, ())
 
 
 PRO_RING = {
@@ -133,6 +177,8 @@ _SIDECHAIN_BONDS: Dict[str, Tuple[Tuple[str, str], ...]] = {
     "GLU": (("CB", "CG"), ("CG", "CD"), ("CD", "OE1"), ("CD", "OE2")),
     "LYS": (("CB", "CG"), ("CG", "CD"), ("CD", "CE"), ("CE", "NZ")),
     "PRO": (("CB", "CG"), ("CG", "CD"), ("CD", "N")),
+    "PHE": (("CB", "CG"), ("CG", "CD1"), ("CG", "CD2"), ("CD1", "CE1"),
+            ("CD2", "CE2"), ("CE1", "CZ"), ("CE2", "CZ")),
     "TYR": (("CB", "CG"), ("CG", "CD1"), ("CG", "CD2"), ("CD1", "CE1"),
             ("CD2", "CE2"), ("CE1", "CZ"), ("CE2", "CZ"), ("CZ", "OH")),
     "TRP": (("CB", "CG"), ("CG", "CD1"), ("CG", "CD2"), ("CD1", "NE1"),
@@ -150,6 +196,7 @@ _ATOM_ORDER: Dict[str, Tuple[str, ...]] = {
     "ASN": ("N", "CA", "C", "O", "CB", "CG", "OD1", "ND2"),
     "GLU": ("N", "CA", "C", "O", "CB", "CG", "CD", "OE1", "OE2"),
     "LYS": ("N", "CA", "C", "O", "CB", "CG", "CD", "CE", "NZ"),
+    "PHE": ("N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ"),
     "TYR": ("N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2",
             "CZ", "OH"),
     "TRP": ("N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "NE1", "CE2",
@@ -244,7 +291,8 @@ def residue_bonds(resname: str) -> Tuple[Tuple[str, str], ...]:
     return tuple(bb) + _SIDECHAIN_BONDS[key]
 
 
-def build_sidechain(resname: str, N, CA, C, CB) -> Dict[str, np.ndarray]:
+def build_sidechain(resname: str, N, CA, C, CB,
+                    chi1: Optional[float] = None) -> Dict[str, np.ndarray]:
     """Heavy-atom sidechain coordinates keyed by PDB atom name.
 
     Returns CB and everything beyond it. Glycine returns an empty dict: it has
@@ -252,6 +300,13 @@ def build_sidechain(resname: str, N, CA, C, CB) -> Dict[str, np.ndarray]:
 
     `C` is accepted for interface completeness; only N, CA and CB determine
     the sidechain frame.
+
+    `chi1` overrides the first chi angle in degrees. `None` uses `CHI_ANGLES`, so every
+    existing caller builds exactly the structure it always did. The override is what lets
+    `representations` put chi1 in the bitstring: for an aromatic residue the ring's
+    orientation about CA-CB is the degree of freedom that decides whether a stacked pair
+    is geometrically reachable, and freezing it can put the correct arrangement out of
+    reach no matter what the backbone does.
     """
     key = _resolve(resname)
     N = np.asarray(N, dtype=float)
@@ -264,6 +319,7 @@ def build_sidechain(resname: str, N, CA, C, CB) -> Dict[str, np.ndarray]:
     atoms: Dict[str, np.ndarray] = {"CB": CB.copy()}
 
     if key == "PRO":
+        # Proline's chi1 is fixed by the ring pucker; an override is meaningless.
         p = PRO_RING
         atoms["CG"] = _nerf(N, CA, CB, p["b_CB_CG"], p["a_CA_CB_CG"],
                             p["t_chi1"])
@@ -271,13 +327,16 @@ def build_sidechain(resname: str, N, CA, C, CB) -> Dict[str, np.ndarray]:
                             p["a_CB_CG_CD"], p["t_chi2"])
         return atoms
 
+    chis = list(CHI_ANGLES[key])
+    if chi1 is not None and chis:
+        chis[0] = float(chi1)
+
     if key in _RING_TEMPLATES:
-        for name, xyz in _place_ring(key, N, CA, CB, CHI_ANGLES[key]).items():
+        for name, xyz in _place_ring(key, N, CA, CB, chis).items():
             if name != "CB":
                 atoms[name] = xyz
         return atoms
 
-    chis = CHI_ANGLES[key]
     for name, (an, bn, cn), length, angle, tspec in _SPECS[key]:
         ref = {"N": N, "CA": CA, "CB": CB}
         ref.update(atoms)
@@ -287,11 +346,17 @@ def build_sidechain(resname: str, N, CA, C, CB) -> Dict[str, np.ndarray]:
 
 
 def build_full_structure(sequence: str, backbone: Dict[str, np.ndarray],
-                         add_oxt: bool = True) -> Dict[str, object]:
+                         add_oxt: bool = True,
+                         chi1: Optional[Dict[int, float]] = None
+                         ) -> Dict[str, object]:
     """Backbone dict from build_backbone() -> all heavy atoms.
 
     Returns {"sequence", "residues", "n_atoms"} where "residues" is a list of
     {atom_name: (3,) array}, one per residue, in PDB atom order.
+
+    `chi1` maps residue index -> chi1 in degrees, for residues whose chi1 is encoded.
+    Absent entries use `CHI_ANGLES`, so `chi1=None` reproduces the previous behaviour
+    exactly -- which is what keeps `run_8state_seed0.py`'s pinned Amber energies valid.
     """
     seq = str(sequence).strip().upper()
     for k in ("N", "CA", "C", "O", "CB"):
@@ -301,6 +366,7 @@ def build_full_structure(sequence: str, backbone: Dict[str, np.ndarray],
     if len(seq) != n_res:
         raise ValueError(f"sequence length {len(seq)} != {n_res} residues "
                          f"in backbone")
+    chi1 = chi1 or {}
 
     residues: List[Dict[str, np.ndarray]] = []
     for i, aa in enumerate(seq):
@@ -311,7 +377,7 @@ def build_full_structure(sequence: str, backbone: Dict[str, np.ndarray],
         Oi = np.asarray(backbone["O"][i], float)
         CBi = np.asarray(backbone["CB"][i], float)
         res: Dict[str, np.ndarray] = {"N": Ni, "CA": CAi, "C": Ci, "O": Oi}
-        res.update(build_sidechain(key, Ni, CAi, Ci, CBi))
+        res.update(build_sidechain(key, Ni, CAi, Ci, CBi, chi1=chi1.get(i)))
         ordered = {a: res[a] for a in _ATOM_ORDER[key] if a in res}
         if add_oxt and i == n_res - 1:
             # OXT is the carboxylate oxygen opposite O about the CA-C axis.

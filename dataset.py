@@ -1,8 +1,22 @@
+"""Peptide dataset: PDB download/cache, identity clustering, train/test splits.
+
+2026-07-28 changes:
+
+* `_identity` is a real global alignment identity. It was a longest-common-*subsequence*
+  ratio, which allows unlimited gaps and so over-merged clusters. That matters now:
+  identity clustering is the *only* guard against fitting energy weights to the answer
+  (`energy_quality.holdout_report` depends on it), so it has to be load-bearing.
+* NMR ensembles are loaded as ensembles -- see `load_ensemble`.
+* `resolve_pdb_for_sequence` replaces the hardcoded sequence -> PDB dictionaries that
+  were scattered through `main.py` and `plot_structures.py`. Those made two entry points
+  silently special-case one particular peptide.
+"""
 import os
 import socket
 import urllib.request
 from dataclasses import dataclass
-from typing import List, Optional
+from functools import lru_cache
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -68,20 +82,42 @@ def download_pdb(pdb_id: str, cache_dir: str = PDB_DIR) -> Optional[str]:
         return None
 
 
-def _identity(a: str, b: str) -> float:
+def _identity(a: str, b: str, gap: float = -1.0) -> float:
+    """Global (Needleman-Wunsch) alignment identity, normalised by the LONGER sequence.
+    The previous implementation was an LCS-length ratio, which charges nothing for gaps
+    and so scores unrelated sequences as similar -- it would happily cluster a 10-mer
+    with a 20-mer that merely contains six of its residues in order. Since clustering is
+    what keeps the weight calibration in `energy_quality` honest, a permissive identity
+    measure silently leaks train sequences into the held-out set.
+    
+    Normalising by the *longer* sequence is what makes gaps cost something. Aligning a
+    10-mer into a 19-mer forces nine gaps regardless of the gap penalty, and the
+    max-match path also minimises them, so it wins at any penalty -- against `min(n, m)`
+    a short sequence fully contained in a long one scores 1.00 no matter how the
+    alignment is parameterised.
+    """
     n, m = len(a), len(b)
     if n == 0 or m == 0:
         return 0.0
-    dp = [[0] * (m + 1) for _ in range(n + 1)]
+    # Score matrix with traceback-free identity counting: each cell carries
+    # (best score, matches along that best path).
+    prev = [(gap * j, 0) for j in range(m + 1)]
     for i in range(1, n + 1):
+        cur = [(gap * i, 0)]
         ai = a[i - 1]
         for j in range(1, m + 1):
-            if ai == b[j - 1]:
-                dp[i][j] = dp[i - 1][j - 1] + 1
-            else:
-                dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
-    return dp[n][m] / min(n, m)
-
+            match = 1.0 if ai == b[j - 1] else 0.0
+            diag = (prev[j - 1][0] + match, prev[j - 1][1] + int(match > 0))
+            up = (prev[j][0] + gap, prev[j][1])
+            left = (cur[j - 1][0] + gap, cur[j - 1][1])
+            best = diag
+            if up[0] > best[0]:
+                best = up
+            if left[0] > best[0]:
+                best = left
+            cur.append(best)
+        prev = cur
+    return prev[m][1] / max(n, m)
 
 def cluster_by_identity(entries: List[PeptideEntry],
                         threshold: float = IDENTITY_THRESHOLD):
@@ -130,7 +166,7 @@ def build_dataset(pdb_ids: Optional[List[str]] = None,
 
 def split_by_cluster(entries: List[PeptideEntry], seed: int = 0,
                      n_test_clusters: int = 3, n_val_clusters: int = 1):
-    clusters = {}
+    clusters: Dict[int, List[PeptideEntry]] = {}
     for e in entries:
         clusters.setdefault(e.cluster, []).append(e)
     ids = sorted(clusters.keys(), key=lambda c: (-len(clusters[c]), c))
@@ -152,5 +188,53 @@ def check_no_cluster_leak(train, val, test) -> bool:
     return tc.isdisjoint(sc) and tc.isdisjoint(vc) and vc.isdisjoint(sc)
 
 
-def load_native(entry: PeptideEntry):
-    return geo.native_coords_from_pdb(entry.pdb_path, chain_id=entry.chain_id)
+def load_native(entry: PeptideEntry, model_index: int = 0):
+    """First (or `model_index`-th) deposited model."""
+    return geo.native_coords_from_pdb(entry.pdb_path, chain_id=entry.chain_id,
+                                      model_index=model_index)
+
+
+def load_ensemble(entry: PeptideEntry):
+    """Every deposited model, as a list of (sequence, coords, phi, psi).
+
+    For the NMR targets in `CANDIDATE_PDB_IDS` this is what RMSD should be measured
+    against; a single model is one arbitrary draw from the ensemble's own spread.
+    """
+    return geo.native_ensemble_from_pdb(entry.pdb_path, chain_id=entry.chain_id)
+
+
+@lru_cache(maxsize=1)
+def _sequence_index(cache_dir: str = PDB_DIR) -> Tuple[Tuple[str, str], ...]:
+    """(sequence, pdb_id) for every parseable PDB in the local cache."""
+    out = []
+    if not os.path.isdir(cache_dir):
+        return tuple()
+    for name in sorted(os.listdir(cache_dir)):
+        if not name.lower().endswith(".pdb"):
+            continue
+        path = os.path.join(cache_dir, name)
+        try:
+            seq, _, _, _ = geo.parse_pdb(path)
+        except Exception:
+            continue
+        out.append((seq, os.path.splitext(name)[0].upper()))
+    return tuple(out)
+
+
+def resolve_pdb_for_sequence(sequence: str,
+                             cache_dir: str = PDB_DIR) -> Optional[str]:
+    """PDB id whose deposited sequence matches `sequence` exactly, or None.
+
+    Replaces the hardcoded ``{"GYDPETGTWG": "1UAO"}`` lookups that had accumulated in
+    `main.py` and `plot_structures.py`. Those made a specific peptide the only one for
+    which those code paths produced native comparisons, which is exactly the kind of
+    single-target coupling that makes an accuracy claim untrustworthy.
+
+    Note this *reads PDB files*, so it is only ever safe to call outside a search --
+    `protein_geometry` records the access and the leakage assertions will fire otherwise.
+    """
+    seq = sequence.strip().upper()
+    for cached_seq, pdb_id in _sequence_index(cache_dir):
+        if cached_seq == seq:
+            return pdb_id
+    return None

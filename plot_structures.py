@@ -1,17 +1,31 @@
+"""Plot predicted and native structures from files on disk.
+
+This used to run its own VQE with a hardcoded ``layers=2, maxiter=150, restarts=1``
+config that bypassed ``experiments.run_one``, ``default_vqe_config`` and the shared
+evaluation budget -- a fourth, undocumented way to produce a prediction, and one whose
+numbers were not comparable with anything in ``results/``. It also carried its own
+hardcoded ``{sequence: pdb_id}`` map, so it only ever drew native comparisons for two
+specific peptides.
+
+It is now a plotter. Produce the prediction with::
+
+    python main.py --predict --sequence <SEQ>
+
+then::
+
+    python plot_structures.py results/<SEQ>_prediction.pdb
+"""
 import os
 import sys
+from typing import Optional
 
 import numpy as np
 import matplotlib.pyplot as plt
 
 import protein_geometry as geo
-import representations as reps
-import hamiltonian as ham
-import vqe as vqe_mod
+import dataset as ds
 import evaluation as ev
 
-
-KNOWN = {"GYDPETGTWG": "1UAO", "SWTWEGNKWTWK": "1LE0"}
 
 COLOR_MAP = {
     **{aa: "red" for aa in "AVLIMFWC"},      # hydrophobic
@@ -46,63 +60,64 @@ def plot_chain(coords, sequence, title, path):
     return fig
 
 
-def main(seq: str) -> None:
-    seq = seq.strip().upper()
-    pdb_id = KNOWN.get(seq)
-    rep = reps.TorsionStateRepresentation(len(seq), n_states=4)
-    H = ham.FoldingHamiltonian(seq, rep)
+def main(pred_pdb: str, out_dir: Optional[str] = None) -> int:
+    if not os.path.exists(pred_pdb):
+        print(f"no such file: {pred_pdb}")
+        print(__doc__)
+        return 1
+    out_dir = out_dir or os.path.dirname(os.path.abspath(pred_pdb)) or "."
+    os.makedirs(out_dir, exist_ok=True)
 
-    print(f"sequence : {seq}  (N = {len(seq)}, {rep.n_qubits} qubits)")
-    geo.reset_pdb_log()
-    res = vqe_mod.run_global_cvar_vqe(H, layers=2, alpha=0.15, shots=1024,
-                                      maxiter=150, restarts=1, seed=0,
-                                      final_shots=4096, verbose=True)
-    assert len(geo.get_pdb_log()) == 0, "LEAKAGE: PDB read during optimization"
+    seq, N, CA, C = geo.parse_pdb(pred_pdb)
+    stem = os.path.splitext(os.path.basename(pred_pdb))[0]
+    print(f"prediction : {pred_pdb}")
+    print(f"sequence   : {seq}  (N = {len(seq)})")
 
-    pred_ca = rep.build_coords(res["vqe_bitstring"])["CA"]
-    print(f"\nVQE energy : {res['vqe_energy']:.4f}")
-    print(f"bitstring  : {res['vqe_bitstring']}")
-
-    os.makedirs("results", exist_ok=True)
-
+    # Native, resolved by sequence match against the local PDB cache rather than from a
+    # hardcoded table -- so this works for any target that has been downloaded.
+    pdb_id = ds.resolve_pdb_for_sequence(seq)
     native_ca = None
+    title = f"Prediction: '{seq}'"
+
     if pdb_id:
-        pdb_path = os.path.join("pdbs", f"{pdb_id}.pdb")
-        if os.path.exists(pdb_path):
-            nseq, ncoords, nphi, npsi = geo.native_coords_from_pdb(pdb_path)
-            native_ca = np.asarray(ncoords["CA"])[:len(seq)]
-            pred_ca = geo.kabsch_superpose(pred_ca, native_ca)
-            r = geo.rmsd(pred_ca, native_ca)
-            ceil_ = ev.representation_ceiling(rep, native_ca, nphi, npsi, seed=0)
-            e_nat = H.energy_from_coords(ncoords, nphi, npsi)
-            print(f"CA-RMSD    : {r:.2f} A   (ceiling {ceil_['ceiling_ca_rmsd']:.2f} A)")
-            print(f"native E   : {e_nat:.4f}   gap {res['vqe_energy'] - e_nat:+.4f}")
-            pred_title = (f"VQE prediction for '{seq}'\n"
-                          f"CA-RMSD to {pdb_id}: {r:.2f} A  |  "
-                          f"E = {res['vqe_energy']:.2f}")
-        else:
-            print(f"  [{pdb_id}.pdb not found in pdbs/ -- prediction only]")
-            pred_title = f"VQE prediction for '{seq}'  (E = {res['vqe_energy']:.2f})"
+        ensemble = geo.native_ensemble_from_pdb(
+            os.path.join(ds.PDB_DIR, f"{pdb_id}.pdb"))
+        models = [np.asarray(c["CA"]) for _, c, _, _ in ensemble]
+        native_ca = models[0]
+        pred_ca = geo.kabsch_superpose(CA, native_ca)
+        ens = geo.ca_rmsd_to_ensemble(CA, models)
+        spread = geo.ensemble_spread(models)
+        mask = ev.well_determined_mask(models)
+        core = ev.core_ca_rmsd(CA, models[ens["best_model"]], mask)
+        print(f"native     : {pdb_id}  ({ens['n_models']} deposited model(s))")
+        print(f"  CA-RMSD to model 1        : {ens['model1']:.2f} A")
+        print(f"  CA-RMSD, best model       : {ens['min']:.2f} A "
+              f"(model {ens['best_model'] + 1})")
+        print(f"  CA-RMSD, mean over models : {ens['mean']:.2f} A")
+        print(f"  ensemble spread           : {spread:.2f} A  "
+              f"<- experimental resolution floor")
+        print(f"  core CA-RMSD ({int(mask.sum())}/{len(mask)} ordered) : {core:.2f} A")
+        title = (f"Prediction for '{seq}'\n"
+                 f"CA-RMSD to {pdb_id}: {ens['min']:.2f} A "
+                 f"(best of {ens['n_models']} models; spread {spread:.2f} A)")
     else:
-        pred_title = f"VQE prediction for '{seq}'  (E = {res['vqe_energy']:.2f})"
+        pred_ca = CA
+        print("native     : no cached PDB matches this sequence")
 
-    print()
-    plot_chain(pred_ca, seq, pred_title,
-               os.path.join("results", f"{seq}_vqe_fold.png"))
-
+    plot_chain(pred_ca, seq, title, os.path.join(out_dir, f"{stem}_fold.png"))
     if native_ca is not None:
         plot_chain(native_ca, seq,
-                   f"Experimental structure ({pdb_id}) for '{seq}'",
-                   os.path.join("results", f"{seq}_native_{pdb_id}.png"))
-
-    geo.write_pdb(os.path.join("results", f"{seq}_prediction.pdb"),
-                  seq, rep.build_coords(res["vqe_bitstring"]),
-                  remark=f"global CVaR-VQE prediction for {seq}")
-    print(f"  saved results/{seq}_prediction.pdb")
+                   f"Experimental structure ({pdb_id}, model 1) for '{seq}'",
+                   os.path.join(out_dir, f"{stem}_native_{pdb_id}.png"))
 
     if os.environ.get("SHOW_PLOTS", "1") != "0":
         plt.show()
+    return 0
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "GYDPETGTWG")
+    if len(sys.argv) < 2:
+        print(__doc__)
+        raise SystemExit(2)
+    raise SystemExit(main(sys.argv[1],
+                          sys.argv[2] if len(sys.argv) > 2 else None))

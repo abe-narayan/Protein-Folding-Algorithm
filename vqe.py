@@ -99,11 +99,16 @@ def _run_single(hamiltonian, circuit, n_qubits: int, layers: int,
 
     history: List[float] = []
     eval_counter = {"n": 0}
+    # Which bitstring-sample stream the next objective call draws from. `None` means "a
+    # fresh stream per call", which is what a deterministic optimizer like COBYLA gets.
+    # SPSA pins it so both arms of its finite difference share one stream -- see `_spsa`.
+    sample_tag = {"v": None}
 
     def objective(params: np.ndarray) -> float:
         k = eval_counter["n"]
         eval_counter["n"] = k + 1
-        rng = np.random.default_rng(np.random.SeedSequence([seed, k]))
+        tag = k if sample_tag["v"] is None else sample_tag["v"]
+        rng = np.random.default_rng(np.random.SeedSequence([seed, tag]))
 
         probs = np.asarray(circuit(params), dtype=float)
         probs = np.clip(probs, 0.0, None)
@@ -143,6 +148,16 @@ def _run_single(hamiltonian, circuit, n_qubits: int, layers: int,
             best["f"], best["x"] = val, np.array(params, dtype=float)
         return val
 
+    # Fraction of THIS restart's budget slice consumed, for SPSA's step schedule. Captured
+    # at entry because `n_energy_evaluations` is cumulative across restarts.
+    _span = max(1.0, float(hamiltonian.budget_remaining)) \
+        if getattr(hamiltonian, "eval_budget", None) else None
+
+    def progress() -> Optional[float]:
+        if _span is None:
+            return None
+        return min(1.0, max(0.0, 1.0 - float(hamiltonian.budget_remaining) / _span))
+
     t0 = time.time()
     terminated_by = "optimizer"
     try:
@@ -151,7 +166,9 @@ def _run_single(hamiltonian, circuit, n_qubits: int, layers: int,
                            options={"maxiter": maxiter, "rhobeg": 0.4})
         elif optimizer.upper() == "SPSA":
             res = _spsa(objective, params0, maxiter,
-                        np.random.default_rng(np.random.SeedSequence([seed, 7])))
+                        np.random.default_rng(np.random.SeedSequence([seed, 7])),
+                        set_sample_tag=lambda t: sample_tag.__setitem__("v", t),
+                        progress=progress)
         else:
             raise ValueError(f"unknown optimizer {optimizer!r}; use COBYLA or SPSA")
         final_params = np.asarray(res.x if hasattr(res, "x") else res, dtype=float)
@@ -180,28 +197,74 @@ class _SPSAResult:
         self.fun = fun
 
 
-def _spsa(objective, x0, n_iter, rng, a=0.25, c=0.15):
+def _spsa(objective, x0, n_iter, rng, a=0.25, c=0.15,
+          set_sample_tag=None, progress=None):
+    """Simultaneous Perturbation Stochastic Approximation (Spall).
 
+    This is the right family of optimizer for this objective, and the reason is structural
+    rather than empirical. The CVaR objective is a *stochastic* estimate: it draws `shots`
+    bitstrings from the circuit's distribution, so evaluating the same parameters twice
+    returns different values. COBYLA is a derivative-free **trust-region** method that
+    builds a linear model from n+1 points and shrinks its region when predicted and actual
+    improvement disagree -- which sampling noise guarantees at every step. It requires a
+    reproducible objective and does not have one here. SPSA's convergence theory is *for*
+    noisy evaluations, and its cost per iteration is 2 evaluations regardless of dimension,
+    against COBYLA's n+1 just to build an initial simplex (89 evaluations at 88 parameters).
+
+    Three fixes over the previous implementation, all of which mattered:
+
+    1. **Progress-driven schedule.** `A` and the decay exponents were calibrated against
+       `n_iter`, but `experiments.run_one` deliberately sets `maxiter` far above what the
+       shared evaluation budget affords, so the budget terminates the run long before `k`
+       approaches `n_iter`. With `n_iter = 50 x n_params = 4000` that made `A = 400` and a
+       first step of `a / 401**0.602 = 0.007` -- five times too small -- and the decay never
+       completed. SPSA crawled. This is the same defect that made simulated annealing never
+       cool: a schedule indexed by a horizon the run never reaches. `progress()` returns the
+       fraction of the budget slice consumed, and the schedule is traversed against that.
+    2. **Common random numbers.** Both arms of the finite difference are now evaluated
+       against the *same* bitstring sample stream, so the sampling noise largely cancels in
+       `fp - fm`. With independent draws the difference carries twice the noise variance of
+       a single evaluation -- the worst case for a finite-difference gradient.
+    3. **Two evaluations per iteration, not three (plus one).** The old version spent a
+       third call at the updated `x` purely for best-tracking. The midpoint `(fp + fm) / 2`
+       is an unbiased estimate of `f(x)` with *lower* variance than a fresh evaluation, so
+       that call was pure waste: 1 + 3n evaluations became 2n, a 1.5x gain in iterations at
+       equal cost.
+
+    `a` and `c` are Spall's gain constants and are now the main tuning knobs; `--hparams`
+    sweeps the optimizer choice, and they should be swept with it rather than guessed.
+    """
     x = np.array(x0, dtype=float)
     A = max(1, n_iter // 10)
-    best_x, best_f = x.copy(), objective(x)
+    best_x, best_f = x.copy(), float("inf")
     for k in range(n_iter):
-        ak = a / ((k + 1 + A) ** 0.602)
-        ck = c / ((k + 1) ** 0.101)
+        # Effective index along the intended schedule. Budget-driven when a budget exists,
+        # so the decay completes exactly as the slice runs out; otherwise the raw index.
+        p = None if progress is None else progress()
+        kk = k if p is None else p * n_iter
+        ak = a / ((kk + 1.0 + A) ** 0.602)
+        ck = c / ((kk + 1.0) ** 0.101)
+
         d = rng.choice([-1.0, 1.0], size=x.size)
+        if set_sample_tag is not None:
+            set_sample_tag(k)               # common random numbers across the +/- pair
         fp = objective(x + ck * d)
         fm = objective(x - ck * d)
+
+        f_mid = 0.5 * (fp + fm)
+        if f_mid < best_f:
+            best_f, best_x = f_mid, x.copy()
+
         x = x - ak * (fp - fm) / (2.0 * ck) * d
-        fx = objective(x)
-        if fx < best_f:
-            best_f, best_x = fx, x.copy()
+    if set_sample_tag is not None:
+        set_sample_tag(None)                # restore per-call streams
     return _SPSAResult(best_x, best_f)
 
 
 def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
                         shots: int = 2048, maxiter: Optional[int] = None,
                         restarts: int = 4, seed: int = 0,
-                        optimizer: str = "COBYLA", ring: bool = True,
+                        optimizer: str = "SPSA", ring: bool = True,
                         final_shots: int = 8192, init_scale: float = 0.6,
                         device: str = "lightning.qubit",
                         readout_reserve_frac: float = 0.01,
@@ -216,6 +279,19 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
     energy inside that budget wins and no method can buy a better answer with a larger
     optimizer allowance. ``maxiter=None`` resolves deliberately high so the shared budget
     is what binds.
+
+    ``optimizer`` defaults to SPSA because this objective is a *stochastic* estimate: it
+    samples ``shots`` bitstrings per call, so the same parameters return different values.
+    COBYLA is a derivative-free trust-region method that requires a reproducible objective
+    and shrinks its region whenever predicted and actual improvement disagree -- which
+    sampling noise causes at every step. See ``_spsa`` for the full argument and for the
+    three defects fixed in the SPSA implementation. COBYLA remains selectable so the choice
+    is measurable; ``experiments.experiment_vqe_hyperparameters`` runs both.
+
+    Note ``maxiter`` means different things to the two: function evaluations for COBYLA,
+    iterations (two evaluations each) for SPSA. ``budget.check_optimizer_budget`` guards
+    both, with an absolute floor for SPSA since its per-iteration cost does not grow with
+    the parameter count.
     """
     n_qubits = hamiltonian.n_qubits
     if n_qubits > 30:
@@ -346,4 +422,4 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
         "restarts_completed": restarts_completed,
         "runtime": total_runtime,
         "seed": seed,
-    }
+    } 

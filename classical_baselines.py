@@ -1,6 +1,7 @@
+"""Classical search arms: random search, simulated annealing, exhaustive reference."""
 import math
 import time
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 
@@ -38,7 +39,30 @@ def random_search(hamiltonian, n_samples: int = 20000, seed: int = 0) -> Dict:
 
 
 def simulated_annealing(hamiltonian, n_steps: int = 20000, t_start: float = 4.0,
-                        t_end: float = 1e-3, seed: int = 0) -> Dict:
+                        t_end: float = 1e-3, seed: int = 0,
+                        anneal_on: str = "budget") -> Dict:
+    """Metropolis annealing over single-slot mutations.
+
+    ``anneal_on`` controls what the temperature schedule is a function of:
+
+    ``"budget"`` (default)
+        Fraction of the shared evaluation budget consumed. This is the fix for a real
+        defect: ``experiments.run_one`` sets ``n_steps = 20 * eval_budget`` deliberately,
+        so that the *budget* is what stops the run. But the schedule used to be a
+        function of the step index, so with n_steps = 400,000 and the budget halting the
+        run near step ~33,000 the temperature only ever fell to
+
+            4.0 * (1 - 0.083) + 0.001 * 0.083 = 3.67
+
+        i.e. 92% of t_start. The arm never converged -- it was a random walk with a
+        best-seen memory, which is why it barely edged out random search (-2.282 against
+        -2.153) despite annealing being the stronger algorithm. Scheduling on the
+        resource that actually terminates the run makes the arm anneal as intended.
+
+    ``"steps"``
+        Legacy behaviour, schedule on step index. Only correct when ``n_steps`` is what
+        terminates the run.
+    """
     rng = np.random.default_rng(seed)
     rep = hamiltonian.rep
     hamiltonian.reset_counters()
@@ -49,15 +73,32 @@ def simulated_annealing(hamiltonian, n_steps: int = 20000, t_start: float = 4.0,
     width = 2 if is_lattice else rep.bits_per_residue
     n_choices = 4 if is_lattice else rep.n_states
 
+    budget = getattr(hamiltonian, "eval_budget", None)
+    use_budget = (anneal_on == "budget") and bool(budget)
+
     current = rep.random_bitstring(rng)
-    cur_e = hamiltonian.energy(current)
+    try:
+        cur_e = hamiltonian.energy(current)
+    except BudgetExhausted:
+        # The budget was already spent before this arm started. Returning a structure
+        # with an infinite energy is more honest than raising out of a search driver.
+        return {
+            "method": "simulated_annealing", "best_bitstring": current,
+            "best_energy": float("inf"), "n_energy_evaluations": 0,
+            "n_steps": n_steps, "n_objective_evals": 0,
+            "terminated_by": "budget", "runtime": time.time() - t0, "seed": seed,
+        }
     best, best_e = current, cur_e
     terminated_by = "n_steps"
     n_done = 0
+    temp = float(t_start)       # defined even if n_steps == 0, since it is reported
 
     for k in range(n_steps):
         n_done += 1
-        frac = k / max(1, n_steps - 1)
+        if use_budget:
+            frac = min(1.0, hamiltonian.n_energy_evaluations / float(budget))
+        else:
+            frac = k / max(1, n_steps - 1)
         temp = t_start * (1 - frac) + t_end * frac
         slot = int(rng.integers(0, n_slots))
         off = slot * width
@@ -82,6 +123,8 @@ def simulated_annealing(hamiltonian, n_steps: int = 20000, t_start: float = 4.0,
         "n_energy_evaluations": hamiltonian.n_energy_evaluations,
         "n_steps": n_steps,
         "n_objective_evals": n_done,
+        "anneal_on": "budget" if use_budget else "steps",
+        "final_temperature": float(temp),
         "terminated_by": terminated_by,
         "runtime": time.time() - t0,
         "seed": seed,
@@ -89,7 +132,6 @@ def simulated_annealing(hamiltonian, n_steps: int = 20000, t_start: float = 4.0,
 
 
 def exhaustive_search(hamiltonian, max_bits: int = 22) -> Dict:
-
     n = hamiltonian.n_bits
     if n > max_bits:
         raise ValueError(

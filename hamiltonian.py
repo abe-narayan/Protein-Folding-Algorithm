@@ -1,9 +1,22 @@
+"""Knowledge-based Hamiltonian over a discrete structure encoding."""
+import itertools
 from typing import Dict, Optional
 
 import numpy as np
 
 import energy_terms as et
+import protein_geometry as geo
+import sidechains as sc
 from budget import BudgetedEnergyModel
+
+
+#: Cap on the chi1 rotamer combinations scanned when scoring a *native* structure. The
+#: native's chi1 is not available from the PDB (`protein_geometry` reads N, CA and C only),
+#: so the fair comparison gives the native the same rotamer freedom the encoding gives a
+#: prediction rather than pinning it to one rotamer -- otherwise the native is handicapped
+#: by a degree of freedom the prediction gets to optimise. 2**6 = 64 evaluations is a
+#: generous ceiling; beyond it the scan falls back to rotamer 0.
+MAX_NATIVE_CHI_SCAN_BITS = 6
 
 
 class FoldingHamiltonian(BudgetedEnergyModel):
@@ -33,15 +46,47 @@ class FoldingHamiltonian(BudgetedEnergyModel):
     def n_bits(self) -> int:
         return self.rep.n_bits
 
+    # -- aromatic rings -----------------------------------------------------
+    def _ring_residues(self):
+        """Residue indices whose aromatic ring can be built, with their 3-letter code."""
+        return [(i, geo.ONE_TO_THREE[aa]) for i, aa in enumerate(self.sequence)
+                if geo.ONE_TO_THREE[aa] in sc.AROMATIC_RING_RESIDUES]
+
+    def _rings_from_coords(self, coords: Dict[str, np.ndarray],
+                           chi1: Optional[Dict[int, float]] = None
+                           ) -> Dict[int, Dict[str, np.ndarray]]:
+        """Aromatic ring atoms from a full backbone, at the given chi1.
+
+        Used for structures that did not come from a bitstring -- natives, mainly -- so
+        their aromatic term is computed with the *same* functional form as a prediction's.
+        Without this the native would silently fall back to the CB proxy while predictions
+        used real ring geometry, and the two energies would not be comparable at all.
+        """
+        if not all(k in coords for k in ("N", "CA", "C", "CB")):
+            return {}
+        chi1 = chi1 or {}
+        out: Dict[int, Dict[str, np.ndarray]] = {}
+        for i, key in self._ring_residues():
+            names = sc.ring_atom_names(key)
+            if not names:
+                continue
+            atoms = sc.build_sidechain(key, coords["N"][i], coords["CA"][i],
+                                       coords["C"][i], coords["CB"][i],
+                                       chi1=chi1.get(i))
+            out[i] = {n: atoms[n] for n in names if n in atoms}
+        return out
+
+    # -- energy -------------------------------------------------------------
     def components(self, bitstring: str) -> Dict[str, float]:
-        if getattr(self.rep, "is_lattice", False):
-            coords = self.rep.build_coords(bitstring)
-            phi = psi = None
-        else:
-            phi, psi = self.rep.decode(bitstring)
-            coords = self.rep.build_coords(bitstring)
+        # One pass through the representation: validate once, decode once, build the
+        # backbone once, and build the aromatic rings from that same backbone. Calling
+        # decode() and build_coords() separately validated the bitstring four times and
+        # decoded it twice, on a path that runs 20,000 times per search arm.
+        # `rings` is None unless chi1 is encoded, which is the CB-proxy fallback signal.
+        phi, psi, coords, rings = self.rep.build_all(bitstring)
         comp = et.energy_components(self.sequence, coords, phi, psi,
-                                    use_corrected_mj=self.use_corrected_mj)
+                                    use_corrected_mj=self.use_corrected_mj,
+                                    rings=rings)
         comp["backtracking"] = (self.backtracking_penalty
                                 * et.backtracking_term(self.rep, bitstring))
         return comp
@@ -58,7 +103,32 @@ class FoldingHamiltonian(BudgetedEnergyModel):
         return e
 
     def energy_from_coords(self, coords: Dict[str, np.ndarray],
-                           phi=None, psi=None) -> float:
-        comp = et.energy_components(self.sequence, coords, phi, psi,
-                                    use_corrected_mj=self.use_corrected_mj)
-        return et.total_from_components(comp, self.weights)
+                           phi=None, psi=None,
+                           chi1: Optional[Dict[int, float]] = None,
+                           scan_chi: bool = True) -> float:
+        """Energy of an arbitrary structure, typically a native.
+
+        `scan_chi=True` minimises over the encoded chi1 rotamers, giving this structure the
+        same sidechain freedom a bitstring-encoded prediction has. Pass an explicit `chi1`,
+        or `scan_chi=False`, to pin the rotamers instead.
+        """
+        def evaluate(chi):
+            comp = et.energy_components(
+                self.sequence, coords, phi, psi,
+                use_corrected_mj=self.use_corrected_mj,
+                rings=self._rings_from_coords(coords, chi) or None)
+            return et.total_from_components(comp, self.weights)
+
+        if chi1 is not None or not scan_chi:
+            return evaluate(chi1)
+
+        residues = [i for i, _ in self._ring_residues()]
+        if not residues or len(residues) > MAX_NATIVE_CHI_SCAN_BITS:
+            return evaluate(None)
+        rot = {i: sc.CHI1_ROTAMERS[geo.ONE_TO_THREE[self.sequence[i]]]
+               for i in residues}
+        best = float("inf")
+        for combo in itertools.product(*(range(len(rot[i])) for i in residues)):
+            best = min(best, evaluate({i: rot[i][k]
+                                       for i, k in zip(residues, combo)}))
+        return best

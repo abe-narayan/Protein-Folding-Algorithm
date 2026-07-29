@@ -1,31 +1,19 @@
-"""Is the energy function pointing at the native fold at all?
+"""Exhaustive energy-landscape diagnosis, with a per-term variance decomposition.
 
-`docs/evaluation-budget.md` records that the legacy model scores native structures worse
-than predictions, and concludes every arm is "finding the true minimum of a wrong
-Hamiltonian". That is a claim about the *landscape*, not about any one search, so it can
-be settled exactly rather than inferred: at N=10 with 4 torsion states the configuration
-space is 4^10 = 1,048,576 structures, small enough to enumerate.
-
-For every representable structure this computes the energy and the CA-RMSD to the native
-fold, then reports:
-
-  * where the native structure ranks in the energy ordering (the headline number -- if
-    the model were useful, native should be near the bottom),
-  * the rank correlation between energy and RMSD (is lower energy even *associated*
-    with being closer to native?),
-  * whether the global energy minimum is anywhere near the native fold,
-  * enrichment: the mean RMSD of the lowest-energy structures vs the population, which
-    is what a search actually samples from,
-  * a per-term decomposition of native vs the global minimum, to attribute the failure.
+The core measurement -- Spearman(energy, RMSD), enrichment, native percentile -- now
+lives in `energy_quality`, where `validation.py` can gate on it. This script remains the
+*exhaustive*, multiprocess version: it enumerates the whole configuration space rather
+than sampling, and adds the per-term attribution that explains a bad result.
 
 Run:  python diagnose_energy_model.py [--protein 1UAO] [--workers 8]
+      python main.py --energy-quality        # the fast, sampled equivalent
 """
 import argparse
 import json
 import multiprocessing as mp
 import os
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS",
            "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
@@ -38,16 +26,18 @@ import representations as reps
 import energy_terms as et
 import hamiltonian as ham
 import evaluation as ev
+import energy_quality as eq
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 _W: Dict = {}
 
 
-def _init(seq: str, n_states: int, native_ca: np.ndarray) -> None:
-    rep = reps.TorsionStateRepresentation(len(seq), n_states=n_states)
+def _init(seq: str, n_states: int, native_ca: np.ndarray,
+          weights: Optional[Dict[str, float]]) -> None:
+    rep = reps.TorsionStateRepresentation(len(seq), n_states=n_states, sequence=seq)
     _W["seq"] = seq
     _W["rep"] = rep
-    _W["H"] = ham.FoldingHamiltonian(seq, rep, cache_limit=0)   # enumeration: no cache
+    _W["H"] = ham.FoldingHamiltonian(seq, rep, weights=weights, cache_limit=0)
     _W["nat"] = np.asarray(native_ca, dtype=float)
     _W["fmt"] = f"0{rep.n_bits}b"
 
@@ -65,36 +55,35 @@ def _chunk(args) -> tuple:
     return lo, e, r
 
 
-def _spearman(a: np.ndarray, b: np.ndarray) -> float:
-    ra = np.argsort(np.argsort(a)).astype(np.float64)
-    rb = np.argsort(np.argsort(b)).astype(np.float64)
-    ra -= ra.mean(); rb -= rb.mean()
-    return float((ra @ rb) / np.sqrt((ra @ ra) * (rb @ rb)))
-
-
-def diagnose(pdb_id: str, n_states: int = 4, workers: int = 8) -> Dict:
+def diagnose(pdb_id: str, n_states: int = 4, workers: int = 8,
+             weights: Optional[Dict[str, float]] = None) -> Dict:
     pdb = os.path.join(BASE, "pdbs", f"{pdb_id}.pdb")
-    seq, ncoords, nphi, npsi = geo.native_coords_from_pdb(pdb)
-    rep = reps.TorsionStateRepresentation(len(seq), n_states=n_states)
-    H = ham.FoldingHamiltonian(seq, rep)
+    ensemble = geo.native_ensemble_from_pdb(pdb)
+    seq, ncoords, nphi, npsi = ensemble[0]
+    rep = reps.TorsionStateRepresentation(len(seq), n_states=n_states, sequence=seq)
+    H = ham.FoldingHamiltonian(seq, rep, weights=weights)
     nat_ca = np.asarray(ncoords["CA"], dtype=float)
     total = 1 << rep.n_bits
 
     print(f"  protein {pdb_id}  seq {seq}  N={len(seq)}  "
           f"{n_states} states -> {rep.n_bits} bits, {total:,} structures")
+    print(f"  residue classes: {' '.join(c[:3] for c in rep.classes)}")
 
-    # --- the three reference energies -------------------------------------------
     e_native_real = H.energy_from_coords(ncoords, nphi, npsi)
     snap_bits = rep.angles_to_bits(nphi, npsi)
     e_native_snap = H.energy(snap_bits)
     snap_rmsd = geo.ca_rmsd(rep.build_coords(snap_bits)["CA"], nat_ca)
     ceiling = ev.representation_ceiling(rep, nat_ca, nphi, npsi, seed=0)
 
+    models = [np.asarray(c["CA"]) for _, c, _, _ in ensemble]
+    spread = geo.ensemble_spread(models)
+
     print(f"  native (real backbone)   E = {e_native_real:9.4f}")
     print(f"  native (snapped)         E = {e_native_snap:9.4f}   "
           f"RMSD {snap_rmsd:.2f} A")
-    print(f"  representation ceiling   RMSD {ceiling['ceiling_ca_rmsd']:.2f} A "
-          f"(best this encoding can do)")
+    print(f"  representation ceiling   RMSD {ceiling['ceiling_ca_rmsd']:.2f} A")
+    print(f"  NMR ensemble spread      RMSD {spread:.2f} A  "
+          f"({len(models)} models) <- resolution floor")
     print(f"  enumerating {total:,} structures on {workers} worker(s) ...", flush=True)
 
     t0 = time.time()
@@ -104,19 +93,18 @@ def diagnose(pdb_id: str, n_states: int = 4, workers: int = 8) -> Dict:
     if workers > 1:
         ctx = mp.get_context("spawn")
         with ctx.Pool(workers, initializer=_init,
-                      initargs=(seq, n_states, nat_ca)) as pool:
+                      initargs=(seq, n_states, nat_ca, weights)) as pool:
             for lo, e, r in pool.imap_unordered(_chunk, bounds, chunksize=4):
                 energies[lo:lo + e.size] = e
                 rmsds[lo:lo + r.size] = r
     else:
-        _init(seq, n_states, nat_ca)
+        _init(seq, n_states, nat_ca, weights)
         for b in bounds:
             lo, e, r = _chunk(b)
             energies[lo:lo + e.size] = e
             rmsds[lo:lo + r.size] = r
     print(f"  done in {time.time() - t0:.1f}s", flush=True)
 
-    # --- where does native sit in the landscape? --------------------------------
     n_better = int((energies < e_native_snap).sum())
     pct = 100.0 * n_better / total
     gmin = int(np.argmin(energies))
@@ -129,24 +117,27 @@ def diagnose(pdb_id: str, n_states: int = 4, workers: int = 8) -> Dict:
     out = {
         "protein": pdb_id, "sequence": seq, "n_residues": len(seq),
         "n_states": n_states, "n_structures": total,
+        "residue_classes": list(rep.classes),
         "e_native_real": float(e_native_real),
         "e_native_snapped": float(e_native_snap),
         "native_snapped_rmsd": float(snap_rmsd),
         "ceiling_rmsd": float(ceiling["ceiling_ca_rmsd"]),
+        "nmr_ensemble_spread": float(spread),
+        "n_native_models": len(models),
         "n_structures_better_than_native": n_better,
         "native_energy_percentile": pct,
         "e_global_min": float(energies[gmin]),
         "global_min_rmsd": float(rmsds[gmin]),
         "global_min_bitstring": gmin_bits,
-        "spearman_energy_vs_rmsd": _spearman(energies, rmsds),
+        "spearman_energy_vs_rmsd": eq.spearman(energies, rmsds),
         "mean_rmsd_all": float(rmsds.mean()),
         "mean_rmsd_top100_by_energy": float(rmsds[top100].mean()),
         "mean_rmsd_top1000_by_energy": float(rmsds[top1k].mean()),
         "best_rmsd_anywhere": float(rmsds.min()),
         "e_at_best_rmsd": float(energies[int(np.argmin(rmsds))]),
+        "weights": dict(H.weights),
     }
 
-    # --- attribute the failure to terms -----------------------------------------
     comp_nat = et.energy_components(seq, ncoords, nphi, npsi)
     comp_min = H.components(gmin_bits)
     out["terms"] = {
@@ -168,8 +159,7 @@ def report(d: Dict) -> None:
           f"score BETTER than native")
     print()
     print(f"  {'':<34}{'energy':>10}  {'CA-RMSD':>9}")
-    print(f"  {'native (real backbone)':<34}{d['e_native_real']:>10.4f}  "
-          f"{'-':>9}")
+    print(f"  {'native (real backbone)':<34}{d['e_native_real']:>10.4f}  {'-':>9}")
     print(f"  {'native (snapped to encoding)':<34}{d['e_native_snapped']:>10.4f}  "
           f"{d['native_snapped_rmsd']:>9.2f}")
     print(f"  {'global energy minimum':<34}{d['e_global_min']:>10.4f}  "
@@ -185,6 +175,8 @@ def report(d: Dict) -> None:
     enr = d['mean_rmsd_all'] - d['mean_rmsd_top100_by_energy']
     print(f"     enrichment                 : {enr:+.2f} A "
           f"({'helps' if enr > 0.25 else 'no useful signal' if enr > -0.25 else 'ANTI-correlated'})")
+    print(f"  NMR ensemble spread           : {d['nmr_ensemble_spread']:.2f} A "
+          f"over {d['n_native_models']} models")
     print()
     print(f"  per-term, native vs global minimum (weighted):")
     print(f"  {'term':<16}{'weight':>8}{'native':>12}{'global min':>12}{'delta':>12}")
@@ -198,6 +190,10 @@ def report(d: Dict) -> None:
     worst = max(d["terms"].items(), key=lambda kv: kv[1]["native"] - kv[1]["global_min"])
     print(f"\n  largest single contribution to native's penalty: "
           f"{worst[0]} ({worst[1]['native'] - worst[1]['global_min']:+.3f})")
+    if d["spearman_energy_vs_rmsd"] <= 0 or enr <= 0:
+        print("\n  !! This objective is NOT usable for structure prediction. Optimising")
+        print("     it does not move toward the native fold, so no RMSD from it should")
+        print("     be quoted in either direction. Run `main.py --calibrate-weights`.")
 
 
 def main() -> int:
@@ -205,10 +201,18 @@ def main() -> int:
     ap.add_argument("--protein", default="1UAO")
     ap.add_argument("--states", type=int, default=4, choices=[4, 8])
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--weights-json", default=None,
+                    help="use calibrated weights from results/weight_calibration.json")
     ap.add_argument("--out", default="results/energy_model_diagnosis.json")
     a = ap.parse_args()
 
-    d = diagnose(a.protein, n_states=a.states, workers=a.workers)
+    weights = None
+    if a.weights_json:
+        with open(a.weights_json) as fh:
+            blob = json.load(fh)
+        weights = blob.get("weights", blob)
+
+    d = diagnose(a.protein, n_states=a.states, workers=a.workers, weights=weights)
     report(d)
     path = os.path.join(BASE, a.out)
     os.makedirs(os.path.dirname(path), exist_ok=True)

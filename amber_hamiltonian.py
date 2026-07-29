@@ -241,7 +241,8 @@ class AmberHamiltonian(BudgetedEnergyModel):
         n = len(self.sequence)
         states = [1] * n if reference_states is None else list(reference_states)
         bits = self.rep.bitstring_from_states(states)
-        heavy = self._heavy_positions(self.rep.build_coords(bits))
+        heavy = self._heavy_positions(self.rep.build_coords(bits),
+                                     chi1=self._chi1_of(bits))
 
         pos = np.array(self._modeller_positions, dtype=float)
         for k, idx in enumerate(self._heavy_order):
@@ -273,8 +274,21 @@ class AmberHamiltonian(BudgetedEnergyModel):
                 (h, p, a, b,
                  np.array([np.dot(d, e1), np.dot(d, e2), np.dot(d, e3)])))
 
-    def _heavy_positions(self, backbone: Dict[str, np.ndarray]) -> np.ndarray:
-        full = sc.build_full_structure(self.sequence, backbone)
+    def _chi1_of(self, bitstring: str) -> Optional[Dict[int, float]]:
+        """Encoded chi1 angles, or None when the representation does not encode chi1.
+
+        The atom *set* is independent of chi1 -- only positions move -- so `_heavy_names`,
+        `_heavy_order` and the frozen hydrogen frames built in `_calibrate_hydrogens` stay
+        valid. That is what makes putting chi1 in the bitstring safe here.
+        """
+        fn = getattr(self.rep, "chi1_degrees", None)
+        if fn is None:
+            return None
+        return fn(bitstring) or None
+
+    def _heavy_positions(self, backbone: Dict[str, np.ndarray],
+                         chi1: Optional[Dict[int, float]] = None) -> np.ndarray:
+        full = sc.build_full_structure(self.sequence, backbone, chi1=chi1)
         out = np.empty((len(self._heavy_names), 3), dtype=float)
         for k, (i, nm) in enumerate(self._heavy_names):
             out[k] = full["residues"][i][nm]
@@ -340,7 +354,8 @@ class AmberHamiltonian(BudgetedEnergyModel):
         if hit is not None:
             return hit                  # cache hits are free
         self._charge()                  # raises BudgetExhausted before minimizing
-        heavy = self._heavy_positions(self.rep.build_coords(bitstring))
+        heavy = self._heavy_positions(self.rep.build_coords(bitstring),
+                                     chi1=self._chi1_of(bitstring))
         e, _, _ = self._evaluate(heavy)
         if len(self._cache) < self._cache_limit:
             self._cache[bitstring] = e
@@ -351,21 +366,26 @@ class AmberHamiltonian(BudgetedEnergyModel):
         if len(bitstring) != self.rep.n_bits:
             raise ValueError(
                 f"bitstring length {len(bitstring)} != n_bits {self.rep.n_bits}")
-        heavy = self._heavy_positions(self.rep.build_coords(bitstring))
+        heavy = self._heavy_positions(self.rep.build_coords(bitstring),
+                                     chi1=self._chi1_of(bitstring))
         e, comp, _ = self._evaluate(heavy, want_components=True)
         comp["total"] = e
         return comp
 
     def energy_from_coords(self, coords: Dict[str, np.ndarray],
-                           phi=None, psi=None) -> float:
-
-        heavy = self._heavy_positions(coords)
+                           phi=None, psi=None,
+                           chi1: Optional[Dict[int, float]] = None) -> float:
+        # Unlike the legacy model this does not scan chi1 rotamers: an OpenMM minimization
+        # per rotamer combination is far too expensive, and the minimizer relaxes the
+        # (unrestrained) sidechains anyway, so the starting rotamer matters much less here.
+        heavy = self._heavy_positions(coords, chi1=chi1)
         e, _, _ = self._evaluate(heavy)
         return e
 
     def minimized_ca(self, bitstring: str) -> Tuple[np.ndarray, np.ndarray]:
 
-        heavy = self._heavy_positions(self.rep.build_coords(bitstring))
+        heavy = self._heavy_positions(self.rep.build_coords(bitstring),
+                                     chi1=self._chi1_of(bitstring))
         pre = np.array([heavy[k] for k, (_, nm) in enumerate(self._heavy_names)
                         if nm == "CA"]) * 10.0
         _, _, pos = self._evaluate(heavy, want_positions=True)

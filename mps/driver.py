@@ -14,6 +14,19 @@ This mirrors ``vqe.run_global_cvar_vqe`` op-for-op, adding two things:
 
 Shared ansatz/optimizer/CVaR helpers are imported from ``vqe`` so there is a single
 source of truth for them.
+
+.. warning::
+   This file is a near-copy of ``vqe.run_global_cvar_vqe`` and the duplication has
+   already cost real work: the ``np.bincount`` out-of-memory bug that killed a 36-qubit
+   run after 99% of 4.2 hours (``IMPLEMENTATION_LOG.md``) was fixed here and not there,
+   and until 2026-07-28 this copy had no evaluation-budget handling at all -- so the only
+   path that reaches interesting system sizes could not take part in the cost-matched
+   comparison ``budget.py`` exists to enable. The budget is wired in now. The two
+   functions differ in exactly three places (where ``idx`` comes from, how the final
+   distribution statistics are computed, and the collapse audit), all of which are
+   parameters rather than forks, so they should be merged into one function with a
+   ``sampler`` argument. That merge is deliberately not bundled with the accuracy work in
+   this pass: it touches a pinned reference run and needs its own verification.
 """
 import math
 import time
@@ -24,6 +37,7 @@ from scipy.optimize import minimize
 
 from vqe import (cvar_from_samples, BestSeenTracker, n_parameters,
                  build_global_circuit, _spsa)
+from budget import BudgetExhausted, resolve_maxiter, check_optimizer_budget
 
 __all__ = ["run_global_cvar_vqe"]
 
@@ -81,25 +95,46 @@ def _run_single(hamiltonian, circuit, sampler, n_qubits, layers, alpha, shots,
                   f"best seen {tracker.best_energy:9.3f}")
         return val
 
+    # Track the best point the objective itself saw, so a run interrupted by the shared
+    # budget still has an answer. Without this, exhausting the budget mid-COBYLA would
+    # leave no `res.x`. Mirrors `vqe._run_single`.
+    best = {"f": float("inf"), "x": np.array(params0, dtype=float)}
+    _raw_objective = objective
+
+    def objective(params):                          # noqa: F811 -- wraps the above
+        val = _raw_objective(params)
+        if val < best["f"]:
+            best["f"], best["x"] = val, np.array(params, dtype=float)
+        return val
+
     t0 = time.time()
-    if optimizer.upper() == "COBYLA":
-        res = minimize(objective, params0, method="COBYLA",
-                       options={"maxiter": maxiter, "rhobeg": 0.4})
-    elif optimizer.upper() == "SPSA":
-        res = _spsa(objective, params0, maxiter,
-                    np.random.default_rng(np.random.SeedSequence([seed, 7])))
-    else:
-        raise ValueError(f"unknown optimizer {optimizer!r}")
+    terminated_by = "optimizer"
+    try:
+        if optimizer.upper() == "COBYLA":
+            res = minimize(objective, params0, method="COBYLA",
+                           options={"maxiter": maxiter, "rhobeg": 0.4})
+        elif optimizer.upper() == "SPSA":
+            res = _spsa(objective, params0, maxiter,
+                        np.random.default_rng(np.random.SeedSequence([seed, 7])))
+        else:
+            raise ValueError(f"unknown optimizer {optimizer!r}")
+        final_params = np.asarray(res.x if hasattr(res, "x") else res, dtype=float)
+        final_objective = (float(res.fun) if hasattr(res, "fun")
+                           else float(objective(final_params)))
+    except BudgetExhausted:
+        # Normal termination, not a failure: the arm spent its share of the shared
+        # evaluation budget. Return the best point the objective actually saw.
+        terminated_by = "budget"
+        final_params, final_objective = best["x"], best["f"]
     runtime = time.time() - t0
 
-    final_params = np.asarray(res.x if hasattr(res, "x") else res, dtype=float)
     return {
         "final_params": final_params,
-        "final_objective": float(res.fun) if hasattr(res, "fun")
-                           else float(objective(final_params)),
+        "final_objective": final_objective,
         "history": history,
         "lowtail_collapse": lowtail_collapse,
         "n_objective_evals": eval_counter["n"],
+        "terminated_by": terminated_by,
         "runtime": runtime,
     }
 
@@ -112,7 +147,9 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
                         sampler: Optional[object] = None,
                         verbose: bool = False,
                         hamiltonian_builder=None, restart_procs: int = 1,
-                        minim_workers: int = 0, use_shared_cache: bool = True) -> Dict:
+                        minim_workers: int = 0, use_shared_cache: bool = True,
+                        readout_reserve_frac: float = 0.01,
+                        optimizer_guard: str = "error") -> Dict:
     """CVaR-VQE over the whole register, lightning (``sampler=None``) or MPS.
 
     Parallel (REC 1/2, result-identical, opt-in): when ``restart_procs > 1`` and a
@@ -124,8 +161,12 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
     """
     n_qubits = hamiltonian.n_qubits
     n_par = n_parameters(n_qubits, layers)
-    if optimizer.upper() == "COBYLA" and maxiter < n_par + 2:
-        raise ValueError(f"COBYLA needs maxiter >= {n_par + 2}; got {maxiter}")
+    maxiter = resolve_maxiter(maxiter, n_par)
+    # Replaces `maxiter >= n_par + 2`, which passed any configuration that could merely
+    # *construct* a COBYLA simplex. See `budget.check_optimizer_budget`.
+    check_optimizer_budget(maxiter, n_par, optimizer,
+                           getattr(hamiltonian, "eval_budget", None),
+                           guard=optimizer_guard)
     circuit = None if sampler is not None else build_global_circuit(
         n_qubits, layers, ring=ring, device=device)
     tracker = BestSeenTracker()
@@ -133,9 +174,18 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
     restart_seeds = [int(s.generate_state(1)[0])
                      for s in np.random.SeedSequence(seed).spawn(restarts)]
 
+    # Withhold a slice for the final read-out so a run can always report its answer after
+    # the optimizer has spent everything. Small on purpose: the read-out scans
+    # most-probable-first and those states are nearly all cache hits after a converged
+    # search, and a large reserve penalises this arm's *search* relative to the classical
+    # ones -- which is the exact unfairness the shared budget exists to remove.
+    budget = getattr(hamiltonian, "eval_budget", None)
+    readout_reserve = 0 if budget is None else max(1, int(budget * readout_reserve_frac))
+
     t0 = time.time()
     runs = []
     best_run = None
+    restarts_completed = 0
     if restart_procs and restart_procs > 1 and hamiltonian_builder is not None:
         # ---- REC 1/2: restarts as independent processes -------------------------
         if sampler is None:
@@ -149,6 +199,7 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
             run = res["run"]
             run["final_params"] = np.asarray(run["final_params"], dtype=float)
             runs.append(run)
+            restarts_completed += 1
             if best_run is None or run["final_objective"] < best_run["final_objective"]:
                 best_run = run
         # Merge best-seen across restarts in restart order (BestSeenTracker.offer only
@@ -164,13 +215,31 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
         for r, rseed in enumerate(restart_seeds):
             if verbose:
                 print(f"    --- restart {r + 1}/{restarts} (seed {rseed}) ---")
+            if budget is not None:
+                # Slice the pool cumulatively: restart r may spend up to its equal share
+                # plus whatever earlier restarts left unspent. Without this, restart 1
+                # consumes the whole pool and a 4-restart algorithm silently becomes a
+                # 1-restart one.
+                searchable = budget - readout_reserve
+                cum_limit = int(round(searchable * (r + 1) / restarts))
+                hamiltonian.reserve(budget - cum_limit)
+                if hamiltonian.budget_remaining <= 0:
+                    if verbose:
+                        print(f"    (budget exhausted; {restarts - r} restarts not run)")
+                    break
             run = _run_single(hamiltonian, circuit, sampler, n_qubits, layers, alpha,
                               shots, maxiter, rseed, optimizer, tracker, init_scale,
                               verbose)
             runs.append(run)
+            restarts_completed += 1
             if best_run is None or run["final_objective"] < best_run["final_objective"]:
                 best_run = run
     total_runtime = time.time() - t0
+
+    if best_run is None:
+        raise BudgetExhausted(budget or 0, hamiltonian.n_energy_evaluations)
+    if hasattr(hamiltonian, "release"):
+        hamiltonian.release()           # hand the reserve back for the read-out
 
     fmt = f"0{n_qubits}b"
     final_rng = np.random.default_rng(np.random.SeedSequence([seed, 0xF1A1]))
@@ -200,16 +269,27 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
         top16 = float(np.sort(freq)[::-1][:16].sum())
         entropy = float(-np.sum(freq * np.log2(freq)))
 
-    uniq = np.unique(final_idx)
+    # Scan most-probable-first. np.unique returns basis indices in *sorted* order, so if
+    # the budget truncates the read-out a plain unique() scan keeps an arbitrary
+    # low-index subset rather than the states the circuit actually favours. This is the
+    # same defect that was fixed in vqe.py; it survived here because this file is a copy.
+    uniq, ucounts = np.unique(final_idx, return_counts=True)
+    uniq = uniq[np.argsort(-ucounts, kind="stable")]
     vqe_bits, vqe_energy = None, float("inf")
-    final_energies = []                         # AUDIT: energies of the final selected sample
+    final_energies = []                     # AUDIT: energies of the final selected sample
     for u in uniq:
         bs = format(int(u), fmt)
-        e = hamiltonian.energy(bs)
+        try:
+            e = hamiltonian.energy(bs)
+        except BudgetExhausted:
+            break
         final_energies.append(e)
         if e < vqe_energy:
             vqe_energy, vqe_bits = e, bs
-    modal_energy = hamiltonian.energy(modal_bits)
+    try:
+        modal_energy = hamiltonian.energy(modal_bits)
+    except BudgetExhausted:
+        modal_energy = float("nan")
     final_energies = np.array(final_energies)
 
     audit = {
@@ -239,5 +319,13 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
         "n_objective_evals_best_run": best_run["n_objective_evals"],
         "n_energy_evaluations": hamiltonian.n_energy_evaluations,
         "n_unique_structures_cached": hamiltonian.cache_size(),
+        "maxiter_resolved": maxiter,
+        "maxiter_over_n_params": maxiter / max(1, n_par),
+        "eval_budget": budget,
+        "budget_exhausted": bool(getattr(hamiltonian, "budget_exhausted", False)),
+        "terminated_by": ("budget"
+                          if any(r.get("terminated_by") == "budget" for r in runs)
+                          else "optimizer"),
+        "restarts_completed": restarts_completed,
         "audit": audit, "runtime": total_runtime, "seed": seed,
     }

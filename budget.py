@@ -40,6 +40,12 @@ MAXITER_PER_PARAM = 50
 #: Hard floor. Below this a COBYLA run is mostly (or entirely) simplex construction.
 MIN_MAXITER_PER_PARAM = 3
 
+#: Hard floor on SPSA iterations. SPSA's cost per iteration is dimension-independent (two
+#: evaluations regardless of parameter count), so its requirement is an absolute iteration
+#: count rather than a multiple of n_params: the gain schedule needs enough steps to decay.
+#: Below ~100 the run is all transient and no convergence.
+MIN_SPSA_ITERATIONS = 100
+
 
 def resolve_maxiter(maxiter: Optional[int], n_params: int) -> int:
     """``None`` -> ``MAXITER_PER_PARAM x n_params``; an explicit value passes through."""
@@ -49,7 +55,8 @@ def resolve_maxiter(maxiter: Optional[int], n_params: int) -> int:
 
 
 def check_optimizer_budget(maxiter: int, n_params: int, optimizer: str,
-                           eval_budget: Optional[int] = None) -> None:
+                           eval_budget: Optional[int] = None,
+                           guard: str = "error") -> None:
     """Reject optimizer allowances that cannot actually optimize.
 
     The old check was ``maxiter >= n_params + 2``, which passes any configuration that
@@ -58,16 +65,39 @@ def check_optimizer_budget(maxiter: int, n_params: int, optimizer: str,
     trust-region steps in 120 dimensions. This errors below ``3 x n_params`` instead, and
     warns when ``maxiter`` is what binds because no shared budget was set (in which case
     the arms are not cost-matched and the comparison is not sound).
+
+    ``guard`` may be ``"error"`` (default), ``"warn"`` or ``"off"``. The only legitimate
+    reason to relax it is reproducing data that was persisted under a rejected
+    configuration -- ``run_8state_seed0.py`` is pinned to exactly such a run, and raising
+    its ``maxiter`` to satisfy the guard would change every energy in the golden set. Any
+    *new* experiment should leave this at ``"error"``.
     """
+    if guard not in ("error", "warn", "off"):
+        raise ValueError(f"guard must be error/warn/off, got {guard!r}")
     n_params = int(n_params)
-    floor = MIN_MAXITER_PER_PARAM * n_params
-    if optimizer.upper() == "COBYLA" and maxiter < floor:
-        raise ValueError(
-            f"maxiter={maxiter} is below {MIN_MAXITER_PER_PARAM}x n_params = {floor} "
-            f"for {n_params} parameters. COBYLA spends its first n_params + 1 = "
-            f"{n_params + 1} evaluations building an initial simplex, so this "
-            "configuration does almost no optimizing. Raise maxiter, reduce layers, or "
-            "pass maxiter=None to let the shared evaluation budget bind instead.")
+    opt = optimizer.upper()
+    msg = None
+    if opt == "COBYLA":
+        floor = MIN_MAXITER_PER_PARAM * n_params
+        if maxiter < floor:
+            msg = (
+                f"maxiter={maxiter} is below {MIN_MAXITER_PER_PARAM}x n_params = {floor} "
+                f"for {n_params} parameters. COBYLA spends its first n_params + 1 = "
+                f"{n_params + 1} evaluations building an initial simplex, so this "
+                "configuration does almost no optimizing. Raise maxiter, reduce layers, or "
+                "pass maxiter=None to let the shared evaluation budget bind instead.")
+    elif opt == "SPSA" and maxiter < MIN_SPSA_ITERATIONS:
+        msg = (
+            f"maxiter={maxiter} is below {MIN_SPSA_ITERATIONS} SPSA iterations. For SPSA "
+            "`maxiter` counts iterations, each costing two objective evaluations, and the "
+            "gain schedule needs enough steps to decay -- a shorter run is all transient. "
+            "Note this floor is absolute, not per-parameter: SPSA's cost per iteration "
+            "does not grow with the parameter count.")
+    if guard != "off" and msg:
+        if guard == "error":
+            raise ValueError(msg)
+        warnings.warn("reproducing a pinned configuration: " + msg,
+                      RuntimeWarning, stacklevel=2)
     if eval_budget is None:
         warnings.warn(
             f"no shared eval_budget set, so maxiter={maxiter} is what terminates this "

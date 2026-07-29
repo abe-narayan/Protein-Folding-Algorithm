@@ -1,4 +1,22 @@
+"""8-state OBC2-native chignolin seed-0 run.
 
+PINNED. This script reproduces a persisted reference dataset (`IMPLEMENTATION_LOG.md`,
+golden CSVs, verified by `partest/golden_check.py` to max absolute error 0.0), so two
+things here are deliberately *not* modernised:
+
+* ``legacy_library=True`` keeps the pre-2026-07-28 flat 8-state torsion library. The new
+  per-residue-class libraries in `representations` change the (phi, psi) values a
+  bitstring decodes to -- chignolin is 3 Gly and 1 Pro out of 10 residues, all of which
+  get different states now -- and therefore every energy in the golden set.
+* ``optimizer_guard="warn"`` keeps ``maxiter=200`` at 120 parameters, which
+  `budget.check_optimizer_budget` correctly rejects for new work (it is below 3x
+  n_params, so most of the allowance goes into constructing a COBYLA simplex). Raising it
+  would change the trajectory and invalidate the reference.
+
+Neither exemption should be copied into a new experiment. To re-run this configuration
+*properly*, drop both flags, accept that the golden data no longer applies, and
+regenerate it.
+"""
 import os
 
 
@@ -27,7 +45,10 @@ MINIM_WORKERS = int(os.environ.get("PFA_MINIM_WORKERS", "0"))
 
 
 def main() -> None:
-    rep = reps.TorsionStateRepresentation(len(SEQ), n_states=8)   # default STATES_8
+    # legacy_library=True: see the module docstring. Do not remove without regenerating
+    # the golden set.
+    rep = reps.TorsionStateRepresentation(len(SEQ), n_states=8, sequence=SEQ,
+                                          legacy_library=True)
     H = build_obc2_native(SEQ, rep)
 
     _, nc, nphi, npsi = geo.native_coords_from_pdb(
@@ -36,17 +57,21 @@ def main() -> None:
     rmsd = lambda b: geo.ca_rmsd(rep.build_coords(b)["CA"], nat_ca)
 
     sampler = MPSSampler(H.n_qubits, layers=4)
-    builder = OBC2Builder(SEQ, 8) if RESTART_PROCS > 1 else None
-    print(f"n_qubits={H.n_qubits}  default STATES_8  MPS backend  config A"
+    # legacy_library must match `rep` above, or workers would decode bitstrings to
+    # different torsions than the parent and silently return different energies.
+    builder = (OBC2Builder(SEQ, 8, legacy_library=True)
+               if RESTART_PROCS > 1 else None)
+    print(f"n_qubits={H.n_qubits}  LEGACY 8-state library  MPS backend  config A"
           f"  | restart_procs={RESTART_PROCS} minim_workers={MINIM_WORKERS}", flush=True)
     res = run_global_cvar_vqe(H, sampler=sampler, layers=4, alpha=0.15, shots=1024,
                               maxiter=200, restarts=3, seed=0, final_shots=8192,
                               init_scale=0.25, verbose=True,
                               hamiltonian_builder=builder,
-                              restart_procs=RESTART_PROCS, minim_workers=MINIM_WORKERS)
+                              restart_procs=RESTART_PROCS, minim_workers=MINIM_WORKERS,
+                              optimizer_guard="warn")
     a = res["audit"]
 
-    print("\n==================== 8-STATE CHIGNOLIN, SEED 0 (config A) ====================")
+    print("\n============ 8-STATE CHIGNOLIN, SEED 0 (config A, LEGACY lib) ============")
     print(f"  evals {res['n_objective_evals_total']} | "
           f"unique {res['n_unique_structures_cached']}")
     n_floored = sum(1 for v in H._cache.values() if not np.isfinite(v))
@@ -74,8 +99,6 @@ def main() -> None:
         r = rmsd(res['vqe_bitstring'])
         print(f"\n  --- RESULT ---")
         print(f"  CA-RMSD (vqe_bitstring) : {r:.2f} A")
-        print(f"     vs 4-state 4.80 A    : {'improved' if r < 4.80 else 'worse'} by {4.80 - r:+.2f} A")
-        print(f"     vs 8-state ceiling 0.919 A : +{r - 0.919:.2f} A above ceiling")
         e_nat_real = H.energy_from_coords(nc, nphi, npsi)
         e_nat_snap8 = H.energy(rep.angles_to_bits(nphi, npsi))
         print(f"\n  --- native-vs-prediction energy gap at 8 states ---")
@@ -83,7 +106,7 @@ def main() -> None:
         print(f"  native (snapped 8-state) {e_nat_snap8:.2f}")
         print(f"  prediction (vqe)         {res['vqe_energy']:.2f}")
         print(f"  gap real-native - pred     : {e_nat_real - res['vqe_energy']:+.2f} kcal")
-        print(f"  gap snap8-native - pred    : {e_nat_snap8 - res['vqe_energy']:+.2f} kcal  (4-state snap was ~+33)")
+        print(f"  gap snap8-native - pred    : {e_nat_snap8 - res['vqe_energy']:+.2f} kcal")
     print(f"\n  best_seen (blowup-unreliable): {res['best_seen_energy']:.1f}  "
           f"RMSD {rmsd(res['best_seen_bitstring']):.2f} A")
     print("  vqe_bitstring:", res['vqe_bitstring'], flush=True)

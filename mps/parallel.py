@@ -44,21 +44,32 @@ pin_threads()
 class OBC2Builder:
     """Picklable factory that rebuilds the exact OBC2-native Hamiltonian in a worker.
 
-    Carries only ``(sequence, n_states)`` — everything else in the construction is
-    deterministic and verbatim (``amber_obc2.build_obc2_native``), so a worker's
+    Carries everything the representation depends on — everything else in the construction
+    is deterministic and verbatim (``amber_obc2.build_obc2_native``), so a worker's
     Hamiltonian is byte-identical to the parent's for energy purposes.
+
+    ``sequence`` and ``legacy_library`` are load-bearing and must match the parent. The
+    representation selects per-residue torsion libraries from the sequence
+    (``representations.residue_classes``), so a worker that rebuilt without them would
+    decode the same bitstring to different (phi, psi) values and therefore return a
+    *different energy for the same structure* — silently, with no error, breaking exactly
+    the byte-identical invariant this class exists to preserve.
     """
 
-    def __init__(self, sequence: str, n_states: int):
+    def __init__(self, sequence: str, n_states: int,
+                 legacy_library: bool = False):
         self.sequence = sequence
         self.n_states = int(n_states)
+        self.legacy_library = bool(legacy_library)
 
     def __call__(self):
         # Imports deferred to call time (worker side); repo modules resolve via the
         # sys.path the spawn machinery restores from the parent.
         import representations as reps
         from amber_obc2 import build_obc2_native
-        rep = reps.TorsionStateRepresentation(len(self.sequence), n_states=self.n_states)
+        rep = reps.TorsionStateRepresentation(
+            len(self.sequence), n_states=self.n_states, sequence=self.sequence,
+            legacy_library=self.legacy_library)
         return build_obc2_native(self.sequence, rep)
 
 
