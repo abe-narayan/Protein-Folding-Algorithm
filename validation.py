@@ -641,9 +641,26 @@ def test_cooperativity_is_topology_symmetric() -> bool:
     calibrated rather than fixed. A ladder-only cooperativity term would be the same bet
     again, and a helix would get nothing from it -- so the helix pattern (consecutive
     n-turns, which is what DSSP means by a helix) is rewarded by the same mechanism with the
-    same default weight. Any asymmetry has to come from calibration on data, not from here.
+    same default weight.
+
+    Equal weights are necessary and NOT sufficient, which is what this test used to miss.
+    Uncapped, the helix run advances one residue at a time along the whole chain (ceiling
+    n-5) while the ladder steps two and is bounded by strand length (ceiling ~n/4): 5 vs 2
+    at n=10, 15 vs 8 at n=20. Equal weights on unequal ceilings is a preference, and it was
+    large enough to make an ideal helix the global minimum of the chignolin landscape. The
+    ceiling parity assertion below is the part that actually has teeth; `COOP_RUN_CAP` is
+    what supplies it.
     """
     ok = (et.DEFAULT_WEIGHTS["coop_helix"] == et.DEFAULT_WEIGHTS["coop_sheet"])
+    # Ceiling parity: a full-length helix must not out-earn a full-length ladder by more
+    # than a small factor. Built from real bond patterns, not from the constant, so this
+    # fails if the cap is removed rather than merely restating COOP_RUN_CAP.
+    n = 20
+    helix_pairs = tuple((i + 4, i) for i in range(n - 4))          # every i->i+4 turn
+    ladder_pairs = tuple((2 + 2 * k, 18 - 2 * k) for k in range(8))  # every ladder rung
+    max_h = abs(et.coop_helix_term(helix_pairs))
+    max_s = abs(et.coop_sheet_term(ladder_pairs))
+    ok &= max_s > 0.0 and max_h <= 2.0 * max_s
     ok &= all(t in et.FREE_WEIGHTS for t in ("coop_helix", "coop_sheet"))
     ok &= all(t in et.COUPLED_TERMS for t in ("coop_helix", "coop_sheet"))
     ok &= all(t in et.TERM_NAMES for t in ("coop_helix", "coop_sheet"))
@@ -652,8 +669,43 @@ def test_cooperativity_is_topology_symmetric() -> bool:
     ok &= et.coop_sheet_term(((2, 12), (4, 10))) <= 0.0
     ok &= et.coop_helix_term(()) == 0.0 and et.coop_sheet_term(()) == 0.0
     return _report("cooperativity is topology-symmetric", ok,
-                   f"coop_helix {et.DEFAULT_WEIGHTS['coop_helix']} == coop_sheet "
-                   f"{et.DEFAULT_WEIGHTS['coop_sheet']}, both free and ablatable")
+                   f"equal weights ({et.DEFAULT_WEIGHTS['coop_helix']}) AND comparable "
+                   f"ceilings at n=20: helix {max_h:.0f} vs ladder {max_s:.0f} "
+                   f"(uncapped the helix would be 15)")
+
+
+def test_coop_helix_run_is_capped() -> bool:
+    """A longer helix must stop earning extra cooperativity once it is established.
+
+    Uncapped, `coop_helix_term` returns one unit per residue for the whole chain, so the
+    reward for being helical grows without bound while `coop_sheet_term`'s is bounded by
+    strand length. That is why an ideal alpha-helix was the global minimum of chignolin's
+    4,194,304-structure landscape at 5.27 A CA-RMSD; with the cap the minimum is a 1.96 A
+    hairpin and the mean RMSD of the 100 lowest-energy clash-free structures falls from
+    5.124 A to 2.567 A.
+
+    Both halves matter. The count must saturate, and it must still DISTINGUISH a helix from
+    scattered bonds below the cap -- a cap that flattened everything to one value would
+    destroy the cooperativity the term exists to provide.
+    """
+    def run_of(k):
+        """k consecutive n-turns as matched (donor, acceptor) pairs."""
+        return tuple((i + 4, i) for i in range(k + 1))
+    vals = [abs(et.coop_helix_term(run_of(k))) for k in range(0, 9)]
+    ok = max(vals) == float(et.COOP_RUN_CAP)          # saturates
+    ok &= vals[0] == 0.0                              # a lone turn is not a run
+    ok &= vals[1] == 1.0 and vals[2] == 2.0           # still graded below the cap
+    ok &= all(v == float(et.COOP_RUN_CAP) for v in vals[et.COOP_RUN_CAP:])
+    # scattered turns must still score zero -- the cap must not turn into a helix bonus
+    ok &= et.coop_helix_term(((4, 0), (12, 8))) == 0.0
+    # and the sheet term must NOT be capped: capping both costs the real hairpin natives
+    # 4.0 kcal/mol (1LE1, 1LE3 at coop_sheet -3.0) for no measured benefit
+    long_ladder = tuple((2 + 2 * k, 18 - 2 * k) for k in range(8))
+    ok &= abs(et.coop_sheet_term(long_ladder)) > float(et.COOP_RUN_CAP)
+    return _report("coop_helix run count is capped", ok,
+                   f"runs of 0..8 turns score {[int(v) for v in vals]} "
+                   f"(cap {et.COOP_RUN_CAP}); coop_sheet uncapped at "
+                   f"{abs(et.coop_sheet_term(long_ladder)):.0f}")
 
 
 def test_cooperativity_reaches_the_energy() -> bool:
@@ -1965,6 +2017,7 @@ def run_all() -> bool:
         test_solvation_matches_naive_pair_sum,
         test_cooperativity_distinguishes_runs_from_scattered_bonds,
         test_cooperativity_is_topology_symmetric,
+        test_coop_helix_run_is_capped,
         test_cooperativity_reaches_the_energy,
         test_chi1_is_encoded_for_aromatics_only,
         test_chi1_moves_rings_but_not_ca,
