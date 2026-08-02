@@ -1,0 +1,111 @@
+{
+  "protein": "1UAO",
+  "sequence": "GYDPETGTWG",
+  "n_structures": 4194304,
+  "n_bits": 22,
+  "mean_rmsd_all": 4.800415612341567,
+  "best_rmsd_anywhere": 0.9683076739311218,
+  "note": "Per-term components enumerated once; every row below is the SAME enumeration re-scored offline. Reproduce with diagnose_energy_model.py --weights-json.",
+  "variants": {
+    "DEFAULT_WEIGHTS": {
+      "global_min_energy": -17.01799201965332,
+      "global_min_rmsd": 5.269588947296143,
+      "global_min_bitstring": "0000000000000000000001",
+      "mean_rmsd_top100": 5.074734554290772,
+      "enrichment": -0.2743189419492049,
+      "spearman": 0.16287509622579474
+    },
+    "coop_helix=0.0": {
+      "global_min_energy": -13.124921798706055,
+      "global_min_rmsd": 1.9631571769714355,
+      "global_min_bitstring": "0000110000111001000110",
+      "mean_rmsd_top100": 2.1874268257617953,
+      "enrichment": 2.6129887865797716,
+      "spearman": 0.1633990114537166
+    },
+    "coop_helix=0.667 (base/3 guardrail floor)": {
+      "global_min_energy": -13.124921798706055,
+      "global_min_rmsd": 1.9631571769714355,
+      "global_min_bitstring": "0000110000111001000110",
+      "mean_rmsd_top100": 2.1874268257617953,
+      "enrichment": 2.6129887865797716,
+      "spearman": 0.1630409784084933
+    },
+    "coop_helix=1.0": {
+      "global_min_energy": -13.124921798706055,
+      "global_min_rmsd": 1.9631571769714355,
+      "global_min_bitstring": "0000110000111001000110",
+      "mean_rmsd_top100": 3.15494220495224,
+      "enrichment": 1.6454734073893267,
+      "spearman": 0.16295481222592847
+    },
+    "coop_helix=1.5": {
+      "global_min_energy": -14.51799201965332,
+      "global_min_rmsd": 5.269588947296143,
+      "global_min_bitstring": "0000000000000000000001",
+      "mean_rmsd_top100": 4.828428597450256,
+      "enrichment": -0.028012985108689215,
+      "spearman": 0.16288663313574292
+    },
+    "hbond_longrange=9.0 (base*3 guardrail ceiling)": {
+      "global_min_energy": -34.23685836791992,
+      "global_min_rmsd": 1.9631571769714355,
+      "global_min_bitstring": "0000110000111001000110",
+      "mean_rmsd_top100": 2.1309792256355284,
+      "enrichment": 2.6694363867060384,
+      "spearman": 0.16548686208459548
+    }
+  },
+  "coop_helix_frac_zero": 0.9843902587890625,
+  "free_weight_single_sweep": {
+    "aromatic": {
+      "base": 0.8,
+      "lo": 0.26666666666666666,
+      "enr_lo": -0.2743189419492049,
+      "hi": 2.4000000000000004,
+      "enr_hi": -0.2743189419492049
+    },
+    "torsion": {
+      "base": 0.15,
+      "lo": 0.049999999999999996,
+      "enr_lo": -0.2743189419492049,
+      "hi": 0.44999999999999996,
+      "enr_hi": -0.2849269760831161
+    },
+    "compactness": {
+      "base": 0.4,
+      "lo": 0.13333333333333333,
+      "enr_lo": -0.2743189419492049,
+      "hi": 1.2000000000000002,
+      "enr_hi": -0.2743189419492049
+    },
+    "solvation": {
+      "base": 0.5,
+      "lo": 0.16666666666666666,
+      "enr_lo": -0.2743189419492049,
+      "hi": 1.5,
+      "enr_hi": -0.2743189419492049
+    },
+    "hbond_longrange": {
+      "base": 3.0,
+      "lo": 1.0,
+      "enr_lo": -0.2743189419492049,
+      "hi": 9.0,
+      "enr_hi": 2.6694363867060384
+    },
+    "coop_helix": {
+      "base": 2.0,
+      "lo": 0.6666666666666666,
+      "enr_lo": 2.6129887865797716,
+      "hi": 6.0,
+      "enr_hi": -0.2743189419492049
+    },
+    "coop_sheet": {
+      "base": 2.0,
+      "lo": 0.6666666666666666,
+      "enr_lo": -0.2743189419492049,
+      "hi": 6.0,
+      "enr_hi": -0.2743189419492049
+    }
+  }
+}

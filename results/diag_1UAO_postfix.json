@@ -1,0 +1,106 @@
+{
+  "protein": "1UAO",
+  "sequence": "GYDPETGTWG",
+  "n_residues": 10,
+  "n_states": 4,
+  "n_structures": 4194304,
+  "residue_classes": [
+    "GLY",
+    "GENERAL",
+    "PRE_PRO",
+    "PRO",
+    "GENERAL",
+    "GENERAL",
+    "GLY",
+    "GENERAL",
+    "GENERAL",
+    "GLY"
+  ],
+  "e_native_real": -5.122730284550834,
+  "e_native_snapped": -2.2785895442399604,
+  "native_snapped_rmsd": 2.668456952742858,
+  "ceiling_rmsd": 0.9683076715165763,
+  "nmr_ensemble_spread": 0.8852322359933257,
+  "n_native_models": 18,
+  "n_structures_better_than_native": 387224,
+  "native_energy_percentile": 9.232139587402344,
+  "e_global_min": -17.01799201965332,
+  "global_min_rmsd": 5.269588947296143,
+  "global_min_bitstring": "0000000000000000000001",
+  "spearman_energy_vs_rmsd": 0.16287509553963217,
+  "mean_rmsd_all": 4.800415515899658,
+  "mean_rmsd_top100_by_energy": 5.074733734130859,
+  "mean_rmsd_top1000_by_energy": 4.232013702392578,
+  "best_rmsd_anywhere": 0.9683076739311218,
+  "e_at_best_rmsd": 44.46133041381836,
+  "weights": {
+    "steric": 4.0,
+    "contact": 1.0,
+    "hbond_local": 1.0,
+    "hbond_longrange": 3.0,
+    "coop_helix": 2.0,
+    "coop_sheet": 2.0,
+    "solvation": 0.5,
+    "electrostatic": 1.0,
+    "aromatic": 0.8,
+    "torsion": 0.15,
+    "compactness": 0.4
+  },
+  "terms": {
+    "steric": {
+      "weight": 4.0,
+      "native": 0.0,
+      "global_min": 0.0
+    },
+    "contact": {
+      "weight": 1.0,
+      "native": 0.20115858788060811,
+      "global_min": 0.3118644344615713
+    },
+    "hbond_local": {
+      "weight": 1.0,
+      "native": -0.21666615582290327,
+      "global_min": -4.309527282853228
+    },
+    "hbond_longrange": {
+      "weight": 3.0,
+      "native": -2.5423332571222828,
+      "global_min": 0.0
+    },
+    "coop_helix": {
+      "weight": 2.0,
+      "native": -0.0,
+      "global_min": -10.0
+    },
+    "coop_sheet": {
+      "weight": 2.0,
+      "native": -0.0,
+      "global_min": -0.0
+    },
+    "solvation": {
+      "weight": 0.5,
+      "native": -2.956497955041125,
+      "global_min": -3.115955711243127
+    },
+    "electrostatic": {
+      "weight": 1.0,
+      "native": 0.8968663064903429,
+      "global_min": 0.4734911868357069
+    },
+    "aromatic": {
+      "weight": 0.8,
+      "native": -0.792478575552683,
+      "global_min": -1.665846786642814e-38
+    },
+    "torsion": {
+      "weight": 0.15,
+      "native": 0.054166236799182824,
+      "global_min": -0.37786472881201366
+    },
+    "compactness": {
+      "weight": 0.4,
+      "native": 0.0,
+      "global_min": 0.0
+    }
+  }
+}

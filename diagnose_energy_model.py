@@ -114,6 +114,17 @@ def diagnose(pdb_id: str, n_states: int = 4, workers: int = 8,
     top100 = order[:100]
     top1k = order[:1000]
 
+    # "Closest structure to native" must break the RMSD tie on energy. chi1 does not move
+    # CA atoms, so every chi variant of a backbone has byte-identical CA-RMSD -- a plain
+    # argmin picks among them arbitrarily and lands on chi=0, which is whichever rotamer
+    # the bitstring happens to number first, not the best one. On chignolin that reported
+    # the ceiling structure at +44.46 when the same backbone scores -3.49 at chi=(1,0):
+    # an artifact of 48 kcal/mol on the single line a reader uses to judge whether the
+    # near-native region is reachable.
+    best_rmsd = float(rmsds.min())
+    at_best = np.flatnonzero(rmsds == rmsds.min())
+    best_rmsd_idx = int(at_best[np.argmin(energies[at_best])])
+
     out = {
         "protein": pdb_id, "sequence": seq, "n_residues": len(seq),
         "n_states": n_states, "n_structures": total,
@@ -133,8 +144,9 @@ def diagnose(pdb_id: str, n_states: int = 4, workers: int = 8,
         "mean_rmsd_all": float(rmsds.mean()),
         "mean_rmsd_top100_by_energy": float(rmsds[top100].mean()),
         "mean_rmsd_top1000_by_energy": float(rmsds[top1k].mean()),
-        "best_rmsd_anywhere": float(rmsds.min()),
-        "e_at_best_rmsd": float(energies[int(np.argmin(rmsds))]),
+        "best_rmsd_anywhere": best_rmsd,
+        "e_at_best_rmsd": float(energies[best_rmsd_idx]),
+        "best_rmsd_bitstring": format(best_rmsd_idx, f"0{rep.n_bits}b"),
         "weights": dict(H.weights),
     }
 
