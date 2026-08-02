@@ -10,6 +10,15 @@
 * `resolve_pdb_for_sequence` replaces the hardcoded sequence -> PDB dictionaries that
   were scattered through `main.py` and `plot_structures.py`. Those made two entry points
   silently special-case one particular peptide.
+
+2026-08-02 change:
+
+* `build_dataset` now gates on rebuild fidelity. It previously filtered on sequence length
+  alone and threw away the coordinates it had just parsed, which let a native the torsion
+  builder cannot reproduce -- 1B03, a cis X-Pro peptide bond rebuilt ~180 deg wrong -- into
+  every calibration and held-out report while carrying an 11 A RMSD floor. Each native is
+  now rebuilt from its own torsions and rejected if the backbone RMSD exceeds
+  `REBUILD_RMSD_TOLERANCE`; see `rebuild_backbone_rmsd`.
 """
 import os
 import socket
@@ -46,6 +55,17 @@ CANDIDATE_PDB_IDS = [
 MIN_LEN = 10
 MAX_LEN = 20
 IDENTITY_THRESHOLD = 0.6
+
+#: Backbone RMSD, A, above which a native cannot be reproduced from its own torsions by
+#: `geo.build_backbone` and so does not belong in the calibration/holdout evidence. The
+#: observed rebuild distribution over `CANDIDATE_PDB_IDS` is 0.18-1.39 A; the sole outlier
+#: is 1B03 at 11.07 A -- a cis X-Pro peptide bond that the trans-only `build_backbone` turns
+#: into a ~180 deg hinge at mid-chain. Anything in the 2-3 A band separates the two cleanly.
+#: This gates the *data*; it deliberately does NOT teach `build_backbone` per-bond omega to
+#: "rescue" 1B03. `build_coords` always builds trans, so a cis native the builder could
+#: reproduce is still one the torsion representation cannot express -- a per-omega gate would
+#: admit a target the search can never reach.
+REBUILD_RMSD_TOLERANCE = 3.0
 
 
 @dataclass
@@ -135,10 +155,44 @@ def cluster_by_identity(entries: List[PeptideEntry],
     return entries
 
 
+def rebuild_backbone_rmsd(path: str, chain_id: Optional[str] = None) -> Optional[float]:
+    """All-backbone (N, CA, C, O) RMSD between a native and the structure rebuilt from its
+    OWN torsions by `geo.build_backbone`. `None` if the native cannot be parsed or rebuilt.
+
+    This is a fidelity check, not a prediction. It asks whether the ideal-geometry builder
+    -- and therefore the torsion representation the search actually optimises over -- can
+    even express this native, before the native is admitted as calibration/holdout evidence.
+    A large value means the deposited geometry carries something the builder cannot encode
+    (e.g. 1B03's cis X-Pro bond), so any RMSD measured against it sits on top of a floor the
+    search can never clear.
+    """
+    try:
+        _, coords, phi, psi = geo.native_coords_from_pdb(path, chain_id=chain_id)
+        built = geo.build_backbone(phi, psi)
+    except Exception:
+        return None
+    keys = [k for k in ("N", "CA", "C", "O") if k in coords and k in built]
+    if not keys:
+        return None
+    mobile = np.vstack([built[k] for k in keys])
+    target = np.vstack([coords[k] for k in keys])
+    aligned = geo.kabsch_superpose(mobile, target)
+    return geo.rmsd(aligned, target)
+
+
 def build_dataset(pdb_ids: Optional[List[str]] = None,
                   cache_dir: str = PDB_DIR,
                   min_len: int = MIN_LEN, max_len: int = MAX_LEN,
+                  max_rebuild_rmsd: Optional[float] = REBUILD_RMSD_TOLERANCE,
                   verbose: bool = True) -> List[PeptideEntry]:
+    """Usable peptides from `pdb_ids` (default `CANDIDATE_PDB_IDS`), identity-clustered.
+
+    `max_rebuild_rmsd` rejects natives the torsion builder cannot reproduce from their own
+    torsions -- see `rebuild_backbone_rmsd`. Pass `None` to disable the gate (for auditing
+    the raw set); the default keeps unbuildable targets such as 1B03 out of every downstream
+    calibration and held-out report, where they would otherwise occupy an identity cluster
+    while carrying an irreducible RMSD floor.
+    """
     ids = list(pdb_ids) if pdb_ids else list(CANDIDATE_PDB_IDS)
     entries: List[PeptideEntry] = []
     for pdb_id in ids:
@@ -156,6 +210,16 @@ def build_dataset(pdb_ids: Optional[List[str]] = None,
                 print(f"  [dataset] skipping {pdb_id}: length {len(seq)} "
                       f"outside [{min_len}, {max_len}]")
             continue
+        if max_rebuild_rmsd is not None:
+            bb = rebuild_backbone_rmsd(path)
+            if bb is None or bb > max_rebuild_rmsd:
+                if verbose:
+                    shown = "unrebuildable" if bb is None else f"backbone RMSD {bb:.2f} A"
+                    print(f"  [dataset] REJECTING {pdb_id}: native does not rebuild from "
+                          f"its own torsions ({shown} > {max_rebuild_rmsd:.1f} A); the "
+                          f"torsion representation cannot express it, so it would poison "
+                          f"calibration -- excluding from the evidence set")
+                continue
         entries.append(PeptideEntry(pdb_id, seq, os.path.abspath(path)))
     cluster_by_identity(entries)
     if verbose:

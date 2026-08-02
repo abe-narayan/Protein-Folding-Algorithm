@@ -35,6 +35,20 @@ ANGLE_C_N_CA = math.radians(121.7)
 ANGLE_CA_C_O = math.radians(120.8)
 OMEGA_TRANS = math.pi
 
+#: Shortest N...O separation that can still be a hydrogen bond, A. Below this the donor and
+#: acceptor heavy atoms are interpenetrating. This lives here, not in `energy_terms`, because
+#: the DSSP form has two independent copies -- `dssp_hbonds` below and
+#: `energy_terms.hbond_terms` -- and they must not drift apart. `energy_terms` imports this
+#: module, so it reads these as `geo.HB_MIN_ON` / `geo.HB_E_FLOOR`.
+HB_MIN_ON = 2.6
+#: Floor on one bond's DSSP energy. LOAD-BEARING, not redundant with HB_MIN_ON: at
+#: dON = 2.6 the deepest energy this form can still reach is -5.62, in an anti-linear
+#: geometry with the acceptor carbonyl C jammed 1.37 A from the donor N. -4.0 is the
+#: deepest value the form assigns to a *correctly oriented* bond at the shortest
+#: crystallographic N...O separation (-4.132), so the clamp costs nothing physical and
+#: removes the residual plateau just inside the cutoff. Do not delete this as belt-and-braces.
+HB_E_FLOOR = -4.0
+
 DEFAULT_PHI = math.radians(-60.0)
 DEFAULT_PSI = math.radians(-45.0)
 
@@ -336,11 +350,12 @@ def dssp_hbonds(coords: Dict[str, np.ndarray], min_sep: int = 2,
 
     with np.errstate(divide="ignore", invalid="ignore"):
         E = 0.084 * 332.0 * (1.0 / dON + 1.0 / dCH - 1.0 / dOH - 1.0 / dCN)
+    E = np.maximum(E, HB_E_FLOOR)
 
     idx = np.arange(n)
     sep = np.abs(idx[:, None] - idx[None, :])
     ok = valid[:, None] & (sep >= min_sep)
-    ok &= (dON > 0.5) & (dCH > 0.5) & (dOH > 0.5) & (dCN > 0.5)
+    ok &= (dON > HB_MIN_ON) & (dCH > 0.5) & (dOH > 0.5) & (dCN > 0.5)
     ok &= np.isfinite(E) & (E < cutoff)
     di, aj = np.where(ok)
     return [(int(i), int(j), float(E[i, j])) for i, j in zip(di, aj)]

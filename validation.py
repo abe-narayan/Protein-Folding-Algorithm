@@ -424,6 +424,62 @@ def test_steric_exempts_hbond_partners() -> bool:
                    f"{len(bonds)} H-bonds present, steric {s:.3f}")
 
 
+def test_hbond_cannot_pay_for_interpenetration() -> bool:
+    """A collapsed N...O pair must score zero, not a jackpot.
+
+    `_steric_layout` exempts every hetero N/O pair and the amide H is not in the steric
+    layout at all, so before `HB_MIN_ON` the DSSP `-1/dOH` term was unbounded below with
+    nothing opposing it: steric is quadratic and capped near 27 weighted, while the H-bond
+    term diverges. Simulated annealing found this on 2 of 3 seeds at the default budget,
+    returning structures near -58 against an ideal helix's -28, with one matched "bond" at
+    dOH = 0.503 -- the old numerical guard itself.
+
+    Two halves, and both matter. The collapsed pair must be rejected outright, and a real
+    helix must be completely unaffected: its bonds sit at dON 3.079, far outside the cutoff,
+    so the fix must not cost a single one of them.
+    """
+    n = 12
+    seq = "A" * n
+    r = reps.TorsionStateRepresentation(n, n_states=4, sequence=seq)
+    helix = r.build_coords(r.bitstring_from_states([0] * n))
+    local, lr, pairs = et.hbond_terms(helix)
+    collapsed = {k: v.copy() for k, v in helix.items()}
+    collapsed["O"][7] = collapsed["N"][0] + np.array([0.9, 0.0, 0.0])
+    c_local, c_lr, c_pairs = et.hbond_terms(collapsed)
+    ok = len(pairs) > 0 and local < -1.0          # the helix still bonds
+    ok &= all((0, 7) != p for p in c_pairs)       # the 0.9 A pair is rejected
+    ok &= (c_local + c_lr) > (local + lr) - 1e-9  # and pays nothing for existing
+    # Behavioural, not a restatement of the constants: drive a lone acceptor carbonyl
+    # through a valid donor and confirm no single admissible bond ever scores below the
+    # floor. The sweep is anti-linear -- carbonyl C jammed toward the donor N with the =O
+    # swung away -- because that is the ONLY geometry in which the DSSP form dips below
+    # HB_E_FLOOR while still clearing dON > HB_MIN_ON; a collinear N-H...O=C bond reaches
+    # interpenetration only once dON has already fallen inside the cutoff. Unclamped, the
+    # deepest admissible sample here is about -5.5, so if the maximum() clamp were removed
+    # this assertion would fail -- it is load-bearing, not a restatement of the constant.
+    # Done on an extended chain, which carries no H-bonds of its own, and the acceptor is
+    # the terminal residue (no following amide H to perturb), so local+lr IS the probe bond.
+    probe = {k: v.copy() for k, v in
+             r.build_coords(r.bitstring_from_states([1] * n)).items()}
+    base_l, base_r, base_p = et.hbond_terms(probe, desolvation_cost=0.0)
+    ok &= (len(base_p) == 0)                      # nothing to confound the sweep
+    n_don = probe["N"][1]                         # residue 1 has a real amide H; residue 0 has none
+    h_don = geo.amide_h_positions(probe["N"], probe["C"], probe["O"])[1]
+    axis = (h_don - n_don) / np.linalg.norm(h_don - n_don)
+    deepest, n_probed = 0.0, 0
+    for s in np.arange(1.30, 3.01, 0.02):         # s = acceptor C ... donor N separation
+        probe["C"][n - 1] = n_don - axis * float(s)          # carbonyl C on the far side of N
+        probe["O"][n - 1] = n_don - axis * float(s + 1.23)   # =O swung further away
+        pl, pr, pp = et.hbond_terms(probe, desolvation_cost=0.0)
+        if len(pp) == 1:                          # only single-bond samples are comparable
+            deepest = min(deepest, pl + pr)
+            n_probed += 1
+    ok &= n_probed > 0 and deepest >= et.HB_E_FLOOR - 1e-9
+    return _report("H-bond term cannot pay for interpenetration", ok,
+                   f"helix keeps {len(pairs)} bonds at local {local:.3f}; "
+                   f"a 0.9 A N...O pair is rejected, not scored")
+
+
 def test_build_all_matches_separate_calls() -> bool:
     """The one-pass hot path must agree exactly with the individual accessors.
 
@@ -1444,6 +1500,36 @@ def test_identity_is_alignment_based() -> bool:
                    f"gapped pair scores {ident:.2f} (LCS would give 1.00)")
 
 
+def test_dataset_rejects_unrebuildable_native() -> bool:
+    """A native the torsion builder cannot reproduce must not enter the evidence set.
+
+    `build_dataset` used to filter on sequence length alone and discard the coordinates it
+    had just parsed, so 1B03 -- a cis X-Pro peptide bond that the trans-only builder rebuilds
+    as a ~180 deg mid-chain hinge -- sat in every calibration and held-out report occupying
+    one of ~10 identity clusters while carrying an ~11 A RMSD floor nothing could clear. The
+    gate rebuilds each native from its own torsions and rejects it past
+    `REBUILD_RMSD_TOLERANCE`. Both directions matter: 1B03 out, a buildable native (1UAO,
+    which rebuilds at 0.18 A) still in, and disabling the gate restores the raw set.
+    """
+    have = {p: os.path.join(ds.PDB_DIR, f"{p}.pdb") for p in ("1B03", "1UAO")}
+    if not all(os.path.exists(p) and os.path.getsize(p) > 0 for p in have.values()):
+        _skip("test_dataset_rejects_unrebuildable_native",
+              "1B03/1UAO not cached in pdbs/ (run --main-comparison once)")
+        return True
+    bb_bad = ds.rebuild_backbone_rmsd(have["1B03"])
+    bb_ok = ds.rebuild_backbone_rmsd(have["1UAO"])
+    ok = bb_bad is not None and bb_bad > ds.REBUILD_RMSD_TOLERANCE
+    ok &= bb_ok is not None and bb_ok < ds.REBUILD_RMSD_TOLERANCE
+    gated = {e.pdb_id for e in
+             ds.build_dataset(pdb_ids=["1UAO", "1B03"], verbose=False)}
+    raw = {e.pdb_id for e in ds.build_dataset(pdb_ids=["1UAO", "1B03"],
+                                              max_rebuild_rmsd=None, verbose=False)}
+    ok &= gated == {"1UAO"} and raw == {"1UAO", "1B03"}
+    return _report("dataset rejects natives it cannot rebuild", ok,
+                   f"1B03 rebuilds at {bb_bad:.2f} A (rejected), "
+                   f"1UAO at {bb_ok:.2f} A (kept)")
+
+
 # ==========================================================================
 # Search correctness
 # ==========================================================================
@@ -1873,6 +1959,7 @@ def run_all() -> bool:
         test_electrostatics_has_physical_magnitude,
         test_steric_sees_backbone_atoms,
         test_steric_exempts_hbond_partners,
+        test_hbond_cannot_pay_for_interpenetration,
         test_build_all_matches_separate_calls,
         test_steric_layout_cache_is_coordinate_independent,
         test_solvation_matches_naive_pair_sum,
@@ -1925,6 +2012,7 @@ def run_all() -> bool:
         test_evaluate_structure_rejects_length_mismatch,
         test_well_determined_mask_is_data_derived,
         test_identity_is_alignment_based,
+        test_dataset_rejects_unrebuildable_native,
         # search correctness
         test_vqe_matches_exhaustive_on_tiny_system,
         test_ceiling_is_a_real_ceiling,

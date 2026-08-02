@@ -114,6 +114,17 @@ SOFTNESS = 0.80
 #: |i-j| at or above which an H-bond counts as long-range. A definition, not a weight.
 HB_LONGRANGE_SEP = 5
 
+#: Re-exported from `protein_geometry` so the two copies of the DSSP form cannot drift.
+#: Below HB_MIN_ON the donor and acceptor heavy atoms are interpenetrating, and nothing else
+#: in the model says so: `_steric_layout` exempts every hetero N/O pair, and the amide H is
+#: not in the steric layout at all, so the `-1/dOH` term is unbounded below. As dOH -> 0.5
+#: (the old numerical guard) that term alone reaches -55.8 kcal/mol against a maximum
+#: possible weighted steric of 27.0, so the clash can never win at any weight. Measured: the
+#: SA arm at default budget drove into it on 2 of 3 seeds, scoring -58 against an ideal
+#: helix's -28.
+HB_MIN_ON = geo.HB_MIN_ON
+HB_E_FLOOR = geo.HB_E_FLOOR
+
 #: Aromatic ring-ring geometry. Two wells rather than one, because pi-stacking has two
 #: distinct favourable arrangements and a single distance well cannot tell them apart:
 #:
@@ -458,11 +469,14 @@ def hbond_terms(coords: Dict[str, np.ndarray],
 
     with np.errstate(divide="ignore", invalid="ignore"):
         E = 0.084 * 332.0 * (1.0 / dON + 1.0 / dCH - 1.0 / dOH - 1.0 / dCN)
+    # Bound the 1/r divergence. Without this the term is unbounded below while `steric_term`
+    # is quadratic and exempts N/O pairs outright, so no weight can ever make the clash win.
+    E = np.maximum(E, HB_E_FLOOR)
 
     idx = np.arange(n)
     sep = np.abs(idx[:, None] - idx[None, :])
     ok = valid[:, None] & (sep >= 2)
-    ok &= (dON > 0.5) & (dCH > 0.5) & (dOH > 0.5) & (dCN > 0.5)
+    ok &= (dON > HB_MIN_ON) & (dCH > 0.5) & (dOH > 0.5) & (dCN > 0.5)
     ok &= np.isfinite(E) & (E < -0.5)
 
     donors, acceptors = np.where(ok)
@@ -470,7 +484,10 @@ def hbond_terms(coords: Dict[str, np.ndarray],
         return 0.0, 0.0, ()
 
     energies = E[donors, acceptors]
-    order = np.argsort(energies)
+    # Stable: HB_E_FLOOR manufactures exact ties at -4.0 and this greedy match is
+    # order-dependent, so an unstable sort could map one bitstring to two energies across
+    # platforms -- which is exactly the invariant budget.py's cache relies on.
+    order = np.argsort(energies, kind="stable")
     donor_used = np.zeros(n, dtype=bool)
     acc_used = np.zeros(n, dtype=bool)
     local = lr = 0.0
