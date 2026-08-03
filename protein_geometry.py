@@ -335,9 +335,23 @@ def contact_metrics(pred: Set, native: Set) -> Tuple[float, float, float]:
     return p, r, f1
 
 
-def dssp_hbonds(coords: Dict[str, np.ndarray], min_sep: int = 2,
-                cutoff: float = -0.5) -> List[Tuple[int, int, float]]:
-    """DSSP electrostatic H-bonds as (donor_i, acceptor_j, energy). Vectorised."""
+def dssp_energy_matrix(coords: Dict[str, np.ndarray], min_sep: int = 2,
+                       cutoff: float = -0.5) -> Tuple[np.ndarray, np.ndarray]:
+    """``(E, ok)``: the DSSP electrostatic energy for every ordered (donor, acceptor)
+    pair, and the mask of pairs admissible as hydrogen bonds.
+
+    THE SINGLE SOURCE OF TRUTH FOR THE DSSP FORM. It used to be written out twice --
+    here and in `energy_terms.hbond_terms` -- which is not a hypothetical drift risk:
+    the N...O interpenetration fix (`HB_MIN_ON`, `HB_E_FLOOR`) was applied to one copy
+    first, and until the second was found, structures whose donor and acceptor heavy
+    atoms were interpenetrating were rejected by the energy while still being *reported*
+    as helix or strand by `assign_secondary_structure`, inflating the SS-agreement metric.
+    Anything that changes the H-bond model belongs here and nowhere else.
+
+    Split out rather than returning finished bonds because the two callers need different
+    things from the same matrix: `dssp_hbonds` wants every admissible pair, while
+    `energy_terms.hbond_terms` runs a greedy one-donor-one-acceptor match over it.
+    """
     N, C, O = coords["N"], coords["C"], coords["O"]
     H = amide_h_positions(N, C, O)
     n = len(N)
@@ -350,6 +364,9 @@ def dssp_hbonds(coords: Dict[str, np.ndarray], min_sep: int = 2,
 
     with np.errstate(divide="ignore", invalid="ignore"):
         E = 0.084 * 332.0 * (1.0 / dON + 1.0 / dCH - 1.0 / dOH - 1.0 / dCN)
+    # Bound the 1/r divergence. Without this the term is unbounded below while
+    # `energy_terms.steric_term` is quadratic and exempts N/O pairs outright, so no weight
+    # could ever make an interpenetrating clash lose.
     E = np.maximum(E, HB_E_FLOOR)
 
     idx = np.arange(n)
@@ -357,6 +374,13 @@ def dssp_hbonds(coords: Dict[str, np.ndarray], min_sep: int = 2,
     ok = valid[:, None] & (sep >= min_sep)
     ok &= (dON > HB_MIN_ON) & (dCH > 0.5) & (dOH > 0.5) & (dCN > 0.5)
     ok &= np.isfinite(E) & (E < cutoff)
+    return E, ok
+
+
+def dssp_hbonds(coords: Dict[str, np.ndarray], min_sep: int = 2,
+                cutoff: float = -0.5) -> List[Tuple[int, int, float]]:
+    """DSSP electrostatic H-bonds as (donor_i, acceptor_j, energy). Vectorised."""
+    E, ok = dssp_energy_matrix(coords, min_sep=min_sep, cutoff=cutoff)
     di, aj = np.where(ok)
     return [(int(i), int(j), float(E[i, j])) for i, j in zip(di, aj)]
 

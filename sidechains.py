@@ -237,13 +237,50 @@ def _torsion_value(spec, chis: Sequence[float]) -> float:
 
 
 def _frame(origin, x_ref, plane_ref):
-    """Orthonormal right-handed frame: e1 towards x_ref, e2 in-plane."""
+    """Orthonormal right-handed frame: e1 towards x_ref, e2 in-plane.
+
+    Deliberately still `np.linalg.norm` / `np.cross` and NOT scalar arithmetic, even
+    though profiling puts `np.cross` at ~15% of the energy hot path. A scalar rewrite is
+    algebraically the same but not bit-identical: `np.linalg.norm` scales before squaring
+    to avoid overflow, and `np.dot` accumulates in its own order, so the two disagree in
+    the last ulp on ~10-30% of random 3-vectors. That propagates into ring coordinates and
+    then into energies (measured: 133 of 1604 energies moved by up to 1.1e-13), which
+    would break the exact reproducibility the golden runs and `budget.py`'s cache
+    invariant are pinned to. The speedup here comes from `_ring_dock` instead, which
+    removes calls rather than changing arithmetic.
+    """
     e1 = np.asarray(x_ref, float) - np.asarray(origin, float)
     e1 = e1 / np.linalg.norm(e1)
     v = np.asarray(plane_ref, float) - np.asarray(origin, float)
     e2 = v - np.dot(v, e1) * e1
     e2 = e2 / np.linalg.norm(e2)
     return e1, e2, np.cross(e1, e2)
+
+
+#: resname -> (atom names, (k, 3) projection coefficients onto the template frame).
+#: The ring template, its frame, and every atom's coordinates in that frame are fixed
+#: properties of the residue type, but `_place_ring` recomputed all three on every call --
+#: once per aromatic per energy evaluation. Caching them removes one of the two `_frame`
+#: calls, the template dict rebuild, and every `np.dot` in the docking loop. The cached
+#: coefficients are the same floats the projections produced, so the docking arithmetic
+#: below is unchanged.
+_RING_DOCK_CACHE: Dict[str, Tuple[Tuple[str, ...], np.ndarray]] = {}
+
+
+def _ring_dock(resname: str) -> Tuple[Tuple[str, ...], np.ndarray]:
+    hit = _RING_DOCK_CACHE.get(resname)
+    if hit is not None:
+        return hit
+    tmpl = _RING_TEMPLATES[resname]
+    t3 = {k: np.array([v[0], v[1], 0.0]) for k, v in tmpl.items()}
+    te1, te2, te3 = _frame(t3["CG"], t3["CB"], t3["CD1"])
+    origin = t3["CG"]
+    names = tuple(t3.keys())
+    coeffs = np.array([[np.dot(t3[k] - origin, te1),
+                        np.dot(t3[k] - origin, te2),
+                        np.dot(t3[k] - origin, te3)] for k in names], dtype=float)
+    _RING_DOCK_CACHE[resname] = (names, coeffs)
+    return names, coeffs
 
 
 def _place_ring(resname: str, N, CA, CB, chis) -> Dict[str, np.ndarray]:
@@ -258,16 +295,12 @@ def _place_ring(resname: str, N, CA, CB, chis) -> Dict[str, np.ndarray]:
     CG = _nerf(N, CA, CB, b_cg, a_cg, chis[0])
     CD1 = _nerf(CA, CB, CG, b_cd1, a_cd1, chis[1])
 
-    tmpl = _RING_TEMPLATES[resname]
-    t3 = {k: np.array([v[0], v[1], 0.0]) for k, v in tmpl.items()}
-    te1, te2, te3 = _frame(t3["CG"], t3["CB"], t3["CD1"])
+    names, coeffs = _ring_dock(resname)          # template-only; see `_ring_dock`
     re1, re2, re3 = _frame(CG, CB, CD1)
 
     out: Dict[str, np.ndarray] = {}
-    for name, p in t3.items():
-        d = p - t3["CG"]
-        out[name] = (CG + np.dot(d, te1) * re1 + np.dot(d, te2) * re2
-                     + np.dot(d, te3) * re3)
+    for name, (c1, c2, c3) in zip(names, coeffs):
+        out[name] = CG + c1 * re1 + c2 * re2 + c3 * re3
     return out
 
 

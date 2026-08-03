@@ -152,6 +152,8 @@ breakdown, the NMR ensemble spread, and the per-residue torsion table.
 | `plot_structures.py` | Plots a prediction PDB against its native ensemble |
 | `diagnose_energy_model.py` | Exhaustive landscape diagnosis with per-term attribution |
 | `run_8state_seed0.py` | **Pinned** 8-state OBC2 chignolin seed-0 run (legacy library) |
+| `run_sa.py` | Classical arm (simulated annealing) on one target or `ALL`, with CA-RMSD |
+| `rmsd_of.py` | CA-RMSD, energy and secondary structure of a given bitstring |
 | `pdbs/`, `results/`, `docs/` | Cached PDBs; generated data; design notes |
 
 The suite pins determinism under fixed seeds, absence of native leakage during

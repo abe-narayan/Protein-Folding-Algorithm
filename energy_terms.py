@@ -495,27 +495,12 @@ def hbond_terms(coords: Dict[str, np.ndarray],
     if not all(k in coords for k in ("N", "C", "O")):
         return 0.0, 0.0, ()      # representation has no backbone (e.g. the lattice)
 
-    N, C, O = coords["N"], coords["C"], coords["O"]
-    H = geo.amide_h_positions(N, C, O)
-    n = len(N)
-    valid = np.isfinite(H).all(axis=1)
-
-    dON = np.linalg.norm(N[:, None, :] - O[None, :, :], axis=2)
-    dCH = np.linalg.norm(C[None, :, :] - H[:, None, :], axis=2)
-    dOH = np.linalg.norm(H[:, None, :] - O[None, :, :], axis=2)
-    dCN = np.linalg.norm(N[:, None, :] - C[None, :, :], axis=2)
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        E = 0.084 * 332.0 * (1.0 / dON + 1.0 / dCH - 1.0 / dOH - 1.0 / dCN)
-    # Bound the 1/r divergence. Without this the term is unbounded below while `steric_term`
-    # is quadratic and exempts N/O pairs outright, so no weight can ever make the clash win.
-    E = np.maximum(E, HB_E_FLOOR)
-
-    idx = np.arange(n)
-    sep = np.abs(idx[:, None] - idx[None, :])
-    ok = valid[:, None] & (sep >= 2)
-    ok &= (dON > HB_MIN_ON) & (dCH > 0.5) & (dOH > 0.5) & (dCN > 0.5)
-    ok &= np.isfinite(E) & (E < -0.5)
+    n = len(coords["N"])
+    # The DSSP form itself lives in `protein_geometry.dssp_energy_matrix` -- ONE copy,
+    # shared with `dssp_hbonds`. It was written out here as well until this was factored;
+    # see that function for why a second copy is a correctness hazard rather than a
+    # duplication nit.
+    E, ok = geo.dssp_energy_matrix(coords, min_sep=2, cutoff=-0.5)
 
     donors, acceptors = np.where(ok)
     if len(donors) == 0:
@@ -629,9 +614,10 @@ def ring_frame(ring_xyz) -> Tuple[np.ndarray, np.ndarray]:
     ascending, so column 0 is the smallest-variance direction.
     """
     P = np.asarray(ring_xyz, dtype=float)
-    M = P - P.mean(axis=0)
+    c = P.mean(axis=0)          # computed once; this used to be evaluated twice
+    M = P - c
     _, vecs = np.linalg.eigh(M.T @ M)
-    return P.mean(axis=0), vecs[:, 0]
+    return c, vecs[:, 0]
 
 
 def aromatic_term(sequence: str, coords: Dict[str, np.ndarray],

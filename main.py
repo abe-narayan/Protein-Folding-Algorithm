@@ -41,6 +41,23 @@ def _parse_strs(s: str) -> List[str]:
     return [x.strip().upper() for x in s.split(",") if x.strip() != ""]
 
 
+def _vqe_config(args) -> dict:
+    """`default_vqe_config` with every VQE flag applied.
+
+    One function rather than the same six lines in each of `--predict`,
+    `--main-comparison` and `--energy-ablation`: those copies had already drifted once
+    (`--init-scale` reached two of the three), which silently gave the same flag different
+    meanings depending on the subcommand.
+    """
+    cfg = exp.default_vqe_config()
+    cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
+               maxiter=args.maxiter, restarts=args.restarts,
+               optimizer=args.optimizer)
+    if getattr(args, "init_scale", None) is not None:
+        cfg["init_scale"] = args.init_scale
+    return cfg
+
+
 def _load_weights(path: Optional[str]) -> Optional[Dict[str, float]]:
     """Load weights from a `weight_calibration.json` (or a bare {term: weight} dict)."""
     if not path:
@@ -162,12 +179,7 @@ def cmd_predict(args) -> int:
         # the run was unbounded and every invocation emitted the no-shared-budget warning.
         H = ham.FoldingHamiltonian(seq, rep, weights=weights,
                                    eval_budget=args.eval_budget)
-    cfg = exp.default_vqe_config()
-    cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
-               maxiter=args.maxiter, restarts=args.restarts,
-               optimizer=args.optimizer)
-    if args.init_scale is not None:
-        cfg["init_scale"] = args.init_scale
+    cfg = _vqe_config(args)
 
     d = rep.describe()
     print(f"sequence        : {seq}  (N = {len(seq)})")
@@ -208,12 +220,7 @@ def cmd_main_comparison(args) -> int:
     if not entries:
         print("No usable peptides. Check network access to files.rcsb.org.")
         return 1
-    cfg = exp.default_vqe_config()
-    cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
-               maxiter=args.maxiter, restarts=args.restarts,
-               optimizer=args.optimizer)
-    if args.init_scale is not None:
-        cfg["init_scale"] = args.init_scale
+    cfg = _vqe_config(args)
     exp.experiment_main_comparison(entries, args.seeds, vqe_config=cfg,
                                    energy_model=args.energy_model,
                                    n_workers=args.workers,
@@ -226,12 +233,7 @@ def cmd_energy_ablation(args) -> int:
     entries = ds.build_dataset(pdb_ids=args.proteins)
     if not entries:
         return 1
-    cfg = exp.default_vqe_config()
-    cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
-               maxiter=args.maxiter, restarts=args.restarts,
-               optimizer=args.optimizer)
-    if args.init_scale is not None:
-        cfg["init_scale"] = args.init_scale
+    cfg = _vqe_config(args)
     exp.experiment_energy_ablation(entries, args.seeds, vqe_config=cfg,
                                    n_workers=args.workers,
                                    eval_budget=args.eval_budget)
