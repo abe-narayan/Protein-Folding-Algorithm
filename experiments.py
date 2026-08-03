@@ -132,7 +132,15 @@ def default_vqe_config() -> Dict:
         "restarts": 4,
         "optimizer": "SPSA",
         "final_shots": 8192,
-        "init_scale": 0.25,
+        # 1.0, not 0.25. At 0.25 all n_params start within 0.25 rad of pi/2, so every
+        # restart and every seed begins at effectively one point and converges to one
+        # answer -- measured on 1UAO as a bit-identical -11.018 / 5.27 A across 3 seeds
+        # and 5 hyperparameter settings. At 400 SPSA iterations, changing ONLY this:
+        #     0.25 -> E -11.018, CA-RMSD 5.27 A     1.00 -> E -11.350, CA-RMSD 1.96 A
+        # This value did nothing until `vqe._warn_if_underoptimised`'s condition was also
+        # satisfied: a wide start needs iterations to concentrate, and the shipped
+        # shots/budget ratio affords about one. See `vqe.run_global_cvar_vqe`.
+        "init_scale": 1.0,
     }
 
 

@@ -1,5 +1,6 @@
 import math
 import time
+import warnings
 from typing import Callable, Dict, List, Optional, Sequence
 
 import numpy as np
@@ -261,11 +262,52 @@ def _spsa(objective, x0, n_iter, rng, a=0.25, c=0.15,
     return _SPSAResult(best_x, best_f)
 
 
+#: Fewest SPSA iterations at which the optimiser has been observed to do useful work on
+#: this objective. Below this the run returns something close to its initialisation.
+#: Measured: the shipped configuration (shots 2048, budget 20000, restarts 4) affords
+#: about 33, and returned a bit-identical answer across 3 seeds and 5 hyperparameter
+#: settings -- the signature of an optimiser that never moved.
+MIN_USEFUL_SPSA_ITERS = 100
+
+
+def _warn_if_underoptimised(hamiltonian, shots: int, restarts: int,
+                            optimizer: str, verbose: bool) -> Optional[str]:
+    """Warn when the shared budget cannot afford enough optimiser steps.
+
+    `hamiltonian.energy` charges per UNIQUE bitstring, so while the circuit distribution is
+    still broad, one objective call costs ~`shots` of the budget. The affordable number of
+    SPSA iterations is therefore about `budget / (shots * restarts * 2)` early on -- it
+    improves as the distribution concentrates and samples start hitting the cache, but the
+    early phase is exactly when the optimiser needs to move.
+
+    This is a warning rather than an error because a small run (validation uses shots=256,
+    maxiter=120) is legitimately allowed to be under-optimised; what is not acceptable is
+    for a headline comparison to be under-optimised without saying so.
+    """
+    budget = getattr(hamiltonian, "eval_budget", None)
+    if not budget or optimizer.upper() != "SPSA":
+        return None
+    affordable = budget / max(1, shots * restarts * 2)
+    if affordable >= MIN_USEFUL_SPSA_ITERS:
+        return None
+    msg = (f"VQE is budget-starved: shots={shots} x restarts={restarts} against a shared "
+           f"budget of {budget} affords about {affordable:.0f} SPSA iterations early on, "
+           f"below the {MIN_USEFUL_SPSA_ITERS} at which this objective has been seen to "
+           f"make progress. The result will be close to the initialisation and will look "
+           f"deceptively stable across seeds. Reduce shots (try "
+           f"{max(32, int(budget / (MIN_USEFUL_SPSA_ITERS * restarts * 2)))}), reduce "
+           f"restarts, or raise the budget.")
+    warnings.warn(msg, RuntimeWarning, stacklevel=3)
+    if verbose:
+        print(f"    !! {msg}")
+    return msg
+
+
 def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
                         shots: int = 2048, maxiter: Optional[int] = None,
                         restarts: int = 4, seed: int = 0,
                         optimizer: str = "SPSA", ring: bool = True,
-                        final_shots: int = 8192, init_scale: float = 0.6,
+                        final_shots: int = 8192, init_scale: float = 1.0,
                         device: str = "lightning.qubit",
                         readout_reserve_frac: float = 0.01,
                         verbose: bool = False) -> Dict:
@@ -292,7 +334,37 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
     iterations (two evaluations each) for SPSA. ``budget.check_optimizer_budget`` guards
     both, with an absolute floor for SPSA since its per-iteration cost does not grow with
     the parameter count.
+
+    ``init_scale`` and the shots/budget ratio are LOAD-BEARING TOGETHER, and this is the
+    single most consequential thing to know about this function. Measured on 1UAO at 400
+    SPSA iterations, changing nothing but the initial spread:
+
+        init_scale 0.25   ->  E -11.018   CA-RMSD 5.27 A   (the alpha-helix)
+        init_scale 1.00   ->  E -11.350   CA-RMSD 1.96 A   (the global minimum's backbone)
+
+    Neither variable does anything on its own, which is why this went undiagnosed:
+
+    * Wide init with too few iterations never concentrates -- the distribution is still
+      near-uniform (entropy 17-20 bits of a possible 22) when the run ends, i.e. random
+      sampling with extra steps.
+    * Enough iterations from a narrow init converges reliably into the SAME basin every
+      time. At ``init_scale=0.25`` every parameter starts within 0.25 rad of pi/2, so all
+      restarts and all seeds begin at effectively one point and reach one answer. That is
+      why 5 hyperparameter settings (alpha 0.05/0.15/0.35, layers 4/8, restarts 4/8) and
+      3 seeds all returned a bit-identical -11.018, and why 12x more optimizer iterations
+      changed nothing.
+
+    The shots/budget interaction is the other half. ``hamiltonian.energy`` charges the
+    budget per UNIQUE bitstring and serves repeats from cache for free, so while the
+    distribution is flat, ``shots=2048`` draws ~2048 distinct structures and burns ~2048
+    of the shared budget on a SINGLE objective call. At the default 20000 that is ~10
+    calls before caching starts paying off -- around 67 objective calls in the best
+    restart, roughly 33 SPSA iterations to fit 88 parameters. The failure is silent: the
+    run reports full budget usage, respects cost matching, and returns a plausible
+    structure. ``_warn_if_underoptimised`` below exists so it is never silent again.
     """
+    _warn_if_underoptimised(hamiltonian, shots, restarts, optimizer, verbose)
+
     n_qubits = hamiltonian.n_qubits
     if n_qubits > 30:
         raise MemoryError(

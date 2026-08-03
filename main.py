@@ -166,6 +166,8 @@ def cmd_predict(args) -> int:
     cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
                maxiter=args.maxiter, restarts=args.restarts,
                optimizer=args.optimizer)
+    if args.init_scale is not None:
+        cfg["init_scale"] = args.init_scale
 
     d = rep.describe()
     print(f"sequence        : {seq}  (N = {len(seq)})")
@@ -210,6 +212,8 @@ def cmd_main_comparison(args) -> int:
     cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
                maxiter=args.maxiter, restarts=args.restarts,
                optimizer=args.optimizer)
+    if args.init_scale is not None:
+        cfg["init_scale"] = args.init_scale
     exp.experiment_main_comparison(entries, args.seeds, vqe_config=cfg,
                                    energy_model=args.energy_model,
                                    n_workers=args.workers,
@@ -226,6 +230,8 @@ def cmd_energy_ablation(args) -> int:
     cfg.update(layers=args.layers, alpha=args.alpha, shots=args.shots,
                maxiter=args.maxiter, restarts=args.restarts,
                optimizer=args.optimizer)
+    if args.init_scale is not None:
+        cfg["init_scale"] = args.init_scale
     exp.experiment_energy_ablation(entries, args.seeds, vqe_config=cfg,
                                    n_workers=args.workers,
                                    eval_budget=args.eval_budget)
@@ -320,6 +326,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="optimizer allowance; default None resolves to 50 x n_params "
                         "so the shared --eval-budget is what terminates the search")
     p.add_argument("--restarts", type=int, default=4)
+    p.add_argument("--init-scale", type=float, default=None,
+                   help="initial parameter spread around pi/2. Small values "
+                        "(0.25) make every restart start at effectively the "
+                        "same point; see vqe.run_global_cvar_vqe.")
     p.add_argument("--optimizer", default=None,
                    choices=["SPSA", "COBYLA"],
                    help="default SPSA. The CVaR objective is a stochastic estimate, and "
