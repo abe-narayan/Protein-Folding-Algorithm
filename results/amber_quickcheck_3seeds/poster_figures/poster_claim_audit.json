@@ -1,0 +1,79 @@
+{
+  "config_id": "ec3b3f5b8bf2",
+  "scope": {
+    "proteins": [
+      "1UAO"
+    ],
+    "splits": [
+      "development"
+    ],
+    "minimum_seeds_per_protein_method": 3
+  },
+  "method_statistics": {
+    "vqe": {
+      "n": 3,
+      "median_ensemble_min_ca_rmsd_angstrom": 4.191082007812801,
+      "median_total_seconds": 10.2147063750308,
+      "median_contact_f1": 0.23529411764705882,
+      "median_longrange_contact_recall": 0.0,
+      "median_secondary_structure_agreement": 0.6
+    },
+    "sa": {
+      "n": 3,
+      "median_ensemble_min_ca_rmsd_angstrom": 4.98747398608174,
+      "median_total_seconds": 10.621578708989546,
+      "median_contact_f1": 0.13333333333333333,
+      "median_longrange_contact_recall": 0.0,
+      "median_secondary_structure_agreement": 0.6
+    },
+    "cem": {
+      "n": 3,
+      "median_ensemble_min_ca_rmsd_angstrom": 3.3479586109371766,
+      "median_total_seconds": 7.729069750057533,
+      "median_contact_f1": 0.13333333333333333,
+      "median_longrange_contact_recall": 0.0,
+      "median_secondary_structure_agreement": 0.6
+    },
+    "random": {
+      "n": 3,
+      "median_ensemble_min_ca_rmsd_angstrom": 4.51948372503121,
+      "median_total_seconds": 7.763901083031669,
+      "median_contact_f1": 0.2105263157894737,
+      "median_longrange_contact_recall": 0.0,
+      "median_secondary_structure_agreement": 0.6
+    }
+  },
+  "paired_vqe_vs_best_classical": {
+    "wins": 1,
+    "comparisons": 3,
+    "gaps_angstrom": [
+      {
+        "protein": "1UAO",
+        "seed": "0",
+        "gap": -2.6352561851004555,
+        "best_classical": "random",
+        "vqe_wins": true
+      },
+      {
+        "protein": "1UAO",
+        "seed": "1",
+        "gap": 0.8431233968756242,
+        "best_classical": "cem",
+        "vqe_wins": false
+      },
+      {
+        "protein": "1UAO",
+        "seed": "2",
+        "gap": 2.5560769906054763,
+        "best_classical": "random",
+        "vqe_wins": false
+      }
+    ]
+  },
+  "poster_claims": {
+    "held_out_multi_target_accuracy_scope": false,
+    "quantum_accuracy_advantage_supported": false,
+    "quantum_speedup_supported": false,
+    "runtime_wording": "Wall-clock measurements describe this classical simulator and the recorded worker counts; they are not evidence of quantum speedup."
+  }
+}
