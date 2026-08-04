@@ -1,0 +1,61 @@
+{
+  "config_id": "d76ddbd1de8c",
+  "created_utc": "2026-08-04T05:03:05.226048+00:00",
+  "git_commit": "49623901358e0dc95583145c67ed3b037df0052e",
+  "versions": {
+    "python": "3.12.13",
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "numpy": "2.4.6",
+    "scipy": "1.18.0",
+    "pennylane": "0.45.1",
+    "pennylane-lightning": "0.45.0",
+    "openmm": "8.5.2",
+    "quimb": "1.14.0",
+    "matplotlib": "3.11.1"
+  },
+  "config": {
+    "split": "development",
+    "proteins": [
+      "1UAO"
+    ],
+    "methods": [
+      "vqe"
+    ],
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "budget": 512,
+    "states": 4,
+    "layers": 1,
+    "shots": 4,
+    "alpha": 0.25,
+    "restarts": 1,
+    "final_shots": 8192,
+    "init_scale": 1.0,
+    "spsa_a": 0.25,
+    "spsa_c": 0.15,
+    "backend": "auto",
+    "mps_threshold": 26,
+    "mps_max_bond": 4096,
+    "mps_cutoff": 1e-12,
+    "minim_workers": 4,
+    "checkpoint": 32,
+    "readout_reserve_frac": 0.05,
+    "sa_restarts": 2,
+    "sa_t_start": 4.0,
+    "sa_t_end": 0.001,
+    "cem_elite": 0.25,
+    "cem_learning_rate": 0.5,
+    "quality_samples": 0,
+    "quality_seed": 314159,
+    "restraint_k": 100.0,
+    "minimization_steps": 50,
+    "minimization_tolerance": 2.0,
+    "collapse_floor": -600.0,
+    "energy_model": "amber"
+  },
+  "algorithm_config_locked_from": null,
+  "claim_boundary": "Accuracy is primary. Runtime is secondary and may be called an advantage only if measured under the recorded worker count. Simulated VQE is not evidence of quantum speedup."
+}
