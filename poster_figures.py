@@ -710,9 +710,6 @@ def figure_objective_alignment(runs: Sequence[Dict[str, str]], output: str) -> N
                 x[keep], y[keep], s=75, marker=MARKERS[method],
                 color=COLORS[method], edgecolor="white", linewidth=0.8,
                 alpha=0.86, label=LABELS[method])
-            for row, xx, yy in zip(np.asarray(mr, dtype=object)[keep], x[keep], y[keep]):
-                ax.annotate(f"s{row['seed']}", (xx, yy), xytext=(4, 4),
-                            textcoords="offset points", fontsize=8, color="#444444")
         ax.axvline(0, color="#333333", lw=1.2, ls=(0, (4, 3)))
         energy_name = "AMBER energy" if _model_label(rows) == "AMBER model" else "model energy"
         ax.set_xlabel(f"Predicted − native {energy_name}")
@@ -722,7 +719,10 @@ def figure_objective_alignment(runs: Sequence[Dict[str, str]], output: str) -> N
     axes[0][-1].legend(frameon=False)
     fig.suptitle("Energy optimization and structural accuracy are different outcomes",
                  fontsize=20, fontweight="bold")
-    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    fig.text(0.5, 0.01,
+             "Each mark is one seed; overlapping marks indicate identical outcomes.",
+             ha="center", fontsize=11, color="#444444")
+    fig.tight_layout(rect=(0, 0.04, 1, 0.92))
     _save(fig, output, "poster_energy_vs_structure")
 
 

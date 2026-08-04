@@ -1,0 +1,208 @@
+{
+  "config_id": "49b4321989d3",
+  "source_kind": "manifested_run",
+  "energy_model": "AMBER model",
+  "budget_scope": "maximum 1,600-evaluation budget (actual 1,586-1,600)",
+  "scope": {
+    "proteins": [
+      "1LE3",
+      "2EVQ"
+    ],
+    "splits": [
+      "test"
+    ],
+    "minimum_seeds_per_protein_method": 3
+  },
+  "method_statistics_pooled_descriptive_only": {
+    "vqe": {
+      "n": 6,
+      "median_unique_energy_evaluations": 1600.0,
+      "median_ensemble_min_ca_rmsd_angstrom": 8.327323903228265,
+      "median_total_seconds": 176.77750852046302,
+      "median_contact_f1": 0.08125,
+      "median_longrange_contact_recall": 0.0,
+      "median_secondary_structure_agreement": 0.6458333333333333
+    },
+    "sa": {
+      "n": 6,
+      "median_unique_energy_evaluations": 1600.0,
+      "median_ensemble_min_ca_rmsd_angstrom": 7.734493242544861,
+      "median_total_seconds": 346.0781873119995,
+      "median_contact_f1": 0.16466165413533834,
+      "median_longrange_contact_recall": 0.0,
+      "median_secondary_structure_agreement": 0.5208333333333333
+    },
+    "cem": {
+      "n": 6,
+      "median_unique_energy_evaluations": 1600.0,
+      "median_ensemble_min_ca_rmsd_angstrom": 7.554997762641017,
+      "median_total_seconds": 269.5607076875167,
+      "median_contact_f1": 0.17647058823529413,
+      "median_longrange_contact_recall": 0.0,
+      "median_secondary_structure_agreement": 0.4583333333333333
+    }
+  },
+  "per_target_method_statistics": {
+    "1LE3": {
+      "vqe": {
+        "n": 3,
+        "median_unique_energy_evaluations": 1600.0,
+        "median_ensemble_min_ca_rmsd_angstrom": 9.862493834844601,
+        "median_total_seconds": 215.2101064589806,
+        "median_contact_f1": 0.0625,
+        "median_longrange_contact_recall": 0.0,
+        "median_secondary_structure_agreement": 0.375
+      },
+      "sa": {
+        "n": 3,
+        "median_unique_energy_evaluations": 1600.0,
+        "median_ensemble_min_ca_rmsd_angstrom": 8.975717072237442,
+        "median_total_seconds": 452.61990475002676,
+        "median_contact_f1": 0.17142857142857143,
+        "median_longrange_contact_recall": 0.0,
+        "median_secondary_structure_agreement": 0.375
+      },
+      "cem": {
+        "n": 3,
+        "median_unique_energy_evaluations": 1600.0,
+        "median_ensemble_min_ca_rmsd_angstrom": 9.899782328249039,
+        "median_total_seconds": 328.4283784580184,
+        "median_contact_f1": 0.17647058823529413,
+        "median_longrange_contact_recall": 0.0,
+        "median_secondary_structure_agreement": 0.1875
+      }
+    },
+    "2EVQ": {
+      "vqe": {
+        "n": 3,
+        "median_unique_energy_evaluations": 1600.0,
+        "median_ensemble_min_ca_rmsd_angstrom": 7.974937454758733,
+        "median_total_seconds": 137.84594954096247,
+        "median_contact_f1": 0.1,
+        "median_longrange_contact_recall": 0.0,
+        "median_secondary_structure_agreement": 0.6666666666666666
+      },
+      "sa": {
+        "n": 3,
+        "median_unique_energy_evaluations": 1600.0,
+        "median_ensemble_min_ca_rmsd_angstrom": 4.470729764103698,
+        "median_total_seconds": 256.2170452499995,
+        "median_contact_f1": 0.0,
+        "median_longrange_contact_recall": 0.0,
+        "median_secondary_structure_agreement": 0.6666666666666666
+      },
+      "cem": {
+        "n": 3,
+        "median_unique_energy_evaluations": 1600.0,
+        "median_ensemble_min_ca_rmsd_angstrom": 5.658953559004765,
+        "median_total_seconds": 228.91432120802347,
+        "median_contact_f1": 0.0,
+        "median_longrange_contact_recall": 0.0,
+        "median_secondary_structure_agreement": 0.6666666666666666
+      }
+    }
+  },
+  "paired_vqe_vs_best_classical": {
+    "wins": 1,
+    "comparisons": 6,
+    "gaps_angstrom": [
+      {
+        "protein": "1LE3",
+        "seed": "100",
+        "gap": 0.6886331697610313,
+        "best_classical": "cem",
+        "vqe_wins": false
+      },
+      {
+        "protein": "1LE3",
+        "seed": "101",
+        "gap": -0.4079918277768204,
+        "best_classical": "sa",
+        "vqe_wins": true
+      },
+      {
+        "protein": "1LE3",
+        "seed": "102",
+        "gap": 2.3159367184685085,
+        "best_classical": "sa",
+        "vqe_wins": false
+      },
+      {
+        "protein": "2EVQ",
+        "seed": "100",
+        "gap": 2.5404165728894723,
+        "best_classical": "sa",
+        "vqe_wins": false
+      },
+      {
+        "protein": "2EVQ",
+        "seed": "101",
+        "gap": 3.616192797892211,
+        "best_classical": "cem",
+        "vqe_wins": false
+      },
+      {
+        "protein": "2EVQ",
+        "seed": "102",
+        "gap": 3.5042076906550346,
+        "best_classical": "sa",
+        "vqe_wins": false
+      }
+    ]
+  },
+  "paired_vqe_best_seen_vs_best_classical": {
+    "definition": "VQE's lowest-AMBER-energy structure encountered during search versus the best classical result; this is not the final circuit readout.",
+    "wins": 3,
+    "comparisons": 6,
+    "gaps_angstrom": [
+      {
+        "protein": "1LE3",
+        "seed": "100",
+        "gap": -3.9209507679651665,
+        "best_classical": "cem",
+        "vqe_wins": true
+      },
+      {
+        "protein": "1LE3",
+        "seed": "101",
+        "gap": -2.3308495559177267,
+        "best_classical": "sa",
+        "vqe_wins": true
+      },
+      {
+        "protein": "1LE3",
+        "seed": "102",
+        "gap": -0.7347789198931682,
+        "best_classical": "sa",
+        "vqe_wins": true
+      },
+      {
+        "protein": "2EVQ",
+        "seed": "100",
+        "gap": 1.8721204688233417,
+        "best_classical": "sa",
+        "vqe_wins": false
+      },
+      {
+        "protein": "2EVQ",
+        "seed": "101",
+        "gap": 4.089753199349708,
+        "best_classical": "cem",
+        "vqe_wins": false
+      },
+      {
+        "protein": "2EVQ",
+        "seed": "102",
+        "gap": 3.0822231339247255,
+        "best_classical": "sa",
+        "vqe_wins": false
+      }
+    ]
+  },
+  "poster_claims": {
+    "held_out_multi_target_accuracy_scope": false,
+    "quantum_accuracy_advantage_supported": false,
+    "quantum_speedup_supported": false,
+    "runtime_wording": "Wall-clock measurements describe this classical simulator and the recorded worker counts; they are not evidence of quantum speedup."
+  }
+}
