@@ -62,8 +62,20 @@ def _ensure_results_dir() -> str:
     return RESULTS_DIR
 
 
+def _assert_csv_schema(path: str) -> None:
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        with open(path, newline="", encoding="utf-8") as existing:
+            header = next(csv.reader(existing), [])
+        if header != CSV_FIELDS:
+            raise ValueError(
+                f"refusing to append the current {len(CSV_FIELDS)}-column schema to "
+                f"{path}, whose header has {len(header)} columns. Archive or rename the "
+                "historical CSV, then rerun so a correctly headed file is created.")
+
+
 def append_csv(path: str, row: Dict) -> None:
     _ensure_results_dir()
+    _assert_csv_schema(path)
     write_header = (not os.path.exists(path)) or os.path.getsize(path) == 0
     clean = {k: row.get(k, "") for k in CSV_FIELDS}
     with open(path, "a", newline="", encoding="utf-8") as fh:
@@ -300,6 +312,7 @@ def experiment_main_comparison(entries: List[ds.PeptideEntry],
                                ) -> List[Dict]:
 
     path = os.path.join(_ensure_results_dir(), csv_name)
+    _assert_csv_schema(path)
     cfg = dict(default_vqe_config() if vqe_config is None else vqe_config)
     if energy_model not in ("legacy", "amber"):
         raise ValueError(f"unknown energy_model {energy_model!r}")
@@ -419,6 +432,7 @@ def experiment_energy_ablation(entries: List[ds.PeptideEntry],
                                ) -> List[Dict]:
 
     path = os.path.join(_ensure_results_dir(), csv_name)
+    _assert_csv_schema(path)
     cfg = dict(default_vqe_config() if vqe_config is None else vqe_config)
     rows = []
 
@@ -532,6 +546,7 @@ def experiment_vqe_hyperparameters(entry: ds.PeptideEntry, seeds: List[int],
                                    ) -> List[Dict]:
 
     path = os.path.join(_ensure_results_dir(), csv_name)
+    _assert_csv_schema(path)
     rows = []
     print("=" * 72)
     print(f"EXPERIMENT 3: VQE HYPERPARAMETERS on {entry.pdb_id}")

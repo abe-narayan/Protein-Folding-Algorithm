@@ -1,4 +1,4 @@
-"""Create defensible, poster-ready figures from an ``amber_study.py`` run.
+"""Create defensible, poster-ready figures from project benchmark results.
 
 The figures deliberately keep four different questions separate:
 
@@ -11,8 +11,13 @@ Every plot shows individual seeds.  With fewer than five seeds the summary bar i
 observed range; with five or more it is a deterministic bootstrap 95% confidence interval
 for the median.  PDF and SVG are the preferred poster assets; a 600-DPI PNG is also saved.
 
-Example
--------
+Inputs may be either an ``amber_study.py`` run directory or the repository's
+``results/main_comparison.csv``. Persisted bitstrings are rebuilt when structure files
+are unavailable, including the legacy torsion encoding used by older CSV rows.
+
+Examples
+--------
+    python poster_figures.py results/main_comparison.csv
     python poster_figures.py results/amber_study_... --structure-protein 1UAO
 """
 from __future__ import annotations
@@ -30,33 +35,81 @@ from matplotlib.lines import Line2D
 import numpy as np
 
 import dataset as ds
+import experiments as exp
 import protein_geometry as geo
+import representations as reps
 
 
 METHOD_ORDER = ("vqe", "sa", "cem", "random")
 LABELS = {
     "vqe": "CVaR-VQE",
+    "lattice_vqe": "Lattice CVaR-VQE",
     "sa": "Simulated annealing",
     "cem": "Cross-entropy method",
     "random": "Random search",
 }
 SHORT_LABELS = {
     "vqe": "CVaR-VQE", "sa": "Sim. annealing",
-    "cem": "CEM", "random": "Random",
+    "cem": "CEM", "random": "Random", "lattice_vqe": "Lattice VQE",
 }
 # Okabe-Ito-derived, color-vision-deficiency-safe palette.
 COLORS = {
     "vqe": "#0072B2",
+    "lattice_vqe": "#CC79A7",
     "sa": "#D55E00",
     "cem": "#009E73",
     "random": "#707070",
 }
-MARKERS = {"vqe": "o", "sa": "s", "cem": "D", "random": "X"}
+MARKERS = {"vqe": "o", "lattice_vqe": "^", "sa": "s",
+           "cem": "D", "random": "X"}
 
 
 def _read_csv(path: str) -> List[Dict[str, str]]:
     with open(path, newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def _read_comparison_csv(path: str) -> List[Dict[str, str]]:
+    """Read historical and current comparison rows without silently shifting columns.
+
+    ``results/main_comparison.csv`` predates the current ``experiments.CSV_FIELDS`` and
+    later runs were appended under the newer schema without replacing the old header.
+    ``csv.DictReader`` maps those newer values onto the wrong field names. Row width is
+    unambiguous, so map each row against the schema that actually produced it and prefer
+    current-schema rows for a target when both generations are present.
+    """
+    with open(path, newline="", encoding="utf-8") as handle:
+        reader = csv.reader(handle)
+        header = next(reader)
+        rows = []
+        for line_number, values in enumerate(reader, start=2):
+            if not values or not any(value.strip() for value in values):
+                continue
+            if len(values) == len(exp.CSV_FIELDS):
+                row = dict(zip(exp.CSV_FIELDS, values))
+                row["_schema"] = "current"
+            elif len(values) == len(header):
+                row = dict(zip(header, values))
+                row["_schema"] = "historical"
+            else:
+                raise ValueError(
+                    f"{path}:{line_number} has {len(values)} columns; expected "
+                    f"{len(header)} (historical) or {len(exp.CSV_FIELDS)} (current)")
+            rows.append(row)
+    current_targets = {row.get("protein") for row in rows
+                       if row.get("_schema") == "current"}
+    compatible = [row for row in rows
+                  if row.get("protein") not in current_targets
+                  or row.get("_schema") == "current"]
+    # This file is append-only and some historical cells were rerun with the same seed.
+    # Mixing those configurations would pseudo-replicate one seed. Preserve file order and
+    # use the most recent row for each target/method/seed cell.
+    latest = {}
+    for row in compatible:
+        key = (row.get("protein"), _canonical_method(row.get("method", "")),
+               row.get("seed"))
+        latest[key] = row
+    return list(latest.values())
 
 
 def _number(row: Dict[str, str], key: str) -> float:
@@ -72,6 +125,119 @@ def _finite(rows: Iterable[Dict[str, str]], key: str) -> np.ndarray:
     return values[np.isfinite(values)]
 
 
+def _canonical_method(raw: str) -> str:
+    value = (raw or "").strip().lower()
+    if "vqe" in value and "lattice" in value:
+        return "lattice_vqe"
+    if "vqe" in value:
+        return "vqe"
+    if value in ("sa", "simulated_annealing") or "torsion_sa" in value:
+        return "sa"
+    if value in ("cem", "cross_entropy") or "cem" in value:
+        return "cem"
+    if "random" in value:
+        return "random"
+    return value
+
+
+def _selected_bits(row: Dict[str, str]) -> str:
+    for key in ("selected_bitstring", "vqe_bitstring", "best_seen_bitstring"):
+        value = (row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _representation_for_row(row: Dict[str, str]):
+    sequence = row["sequence"].strip().upper()
+    kind = row.get("representation", "torsion").strip().lower()
+    n_states = int(_number(row, "n_states"))
+    bits = _selected_bits(row)
+    rep = reps.make_representation(kind, len(sequence), n_states=n_states,
+                                   sequence=sequence)
+    if bits and rep.n_bits != len(bits) and kind == "torsion":
+        # Persisted pre-2026-07-28 runs used the flat library without chi1 bits.
+        legacy = reps.make_representation(
+            kind, len(sequence), n_states=n_states, sequence=sequence,
+            legacy_library=True)
+        if legacy.n_bits == len(bits):
+            rep = legacy
+    if bits and rep.n_bits != len(bits):
+        raise ValueError(
+            f"{row.get('protein')} {row.get('method')} bitstring has {len(bits)} bits; "
+            f"the recorded representation expects {rep.n_bits}")
+    return rep
+
+
+def _predicted_ca(row: Dict[str, str]) -> np.ndarray:
+    bits = _selected_bits(row)
+    if not bits:
+        raise ValueError(f"no bitstring for {row.get('protein')} {row.get('method')}")
+    rep = _representation_for_row(row)
+    if getattr(rep, "is_lattice", False):
+        return np.asarray(rep.decode(bits), dtype=float)
+    return np.asarray(rep.build_coords(bits)["CA"], dtype=float)
+
+
+def _normalise_comparison_rows(rows: Sequence[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Map ``main_comparison.csv`` into the manifested-run schema used by the plots."""
+    ensemble_cache: Dict[str, Tuple[List[np.ndarray], float]] = {}
+    normalised = []
+    for source in rows:
+        row = dict(source)
+        row["method"] = _canonical_method(row.get("method", ""))
+        row.setdefault("energy_model", "legacy")
+        row.setdefault("split", "unspecified")
+        row.setdefault("config_id", "main-comparison")
+        row.setdefault(
+            "run_id", f"{row.get('protein')}:{row['method']}:{row.get('seed')}")
+        row.setdefault("selected_energy", row.get("vqe_energy", ""))
+        row.setdefault("selected_bitstring", _selected_bits(row))
+        row.setdefault("total_s", row.get("runtime", ""))
+        row.setdefault("search_s", row.get("runtime", ""))
+        row.setdefault("minim_workers", "1")
+
+        protein = row["protein"]
+        if protein not in ensemble_cache:
+            entries = ds.build_dataset([protein], verbose=False)
+            if not entries:
+                raise ValueError(f"cannot load native ensemble for {protein}")
+            ensemble = ds.load_ensemble(entries[0])
+            models = [np.asarray(coords["CA"], dtype=float)
+                      for _, coords, _, _ in ensemble]
+            ensemble_cache[protein] = (models, geo.ensemble_spread(models))
+        models, spread = ensemble_cache[protein]
+        ca = _predicted_ca(row)
+        row["ca_rmsd_ensemble_min"] = str(
+            geo.ca_rmsd_to_ensemble(ca, models)["min"])
+        row["ensemble_spread"] = str(spread)
+        normalised.append(row)
+    return normalised
+
+
+def _load_input(path: str):
+    path = os.path.abspath(path)
+    if os.path.isdir(path):
+        run_dir = path
+        with open(os.path.join(run_dir, "manifest.json"), encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        runs = _read_csv(os.path.join(run_dir, "runs.csv"))
+        for row in runs:
+            row["method"] = _canonical_method(row.get("method", ""))
+        checkpoints = os.path.join(run_dir, "checkpoints.csv")
+        traces = _read_csv(checkpoints) if os.path.exists(checkpoints) else []
+        source_kind = "manifested_run"
+    elif path.lower().endswith(".csv"):
+        run_dir = os.path.dirname(path)
+        runs = _normalise_comparison_rows(_read_comparison_csv(path))
+        traces = []
+        manifest = {"config_id": "main-comparison", "source_csv": path}
+        source_kind = "comparison_csv"
+    else:
+        raise ValueError("input must be a run directory or a CSV file")
+    return run_dir, runs, traces, manifest, source_kind
+
+
 def _methods(runs: Sequence[Dict[str, str]]) -> List[str]:
     present = {row.get("method") for row in runs}
     return [method for method in METHOD_ORDER if method in present]
@@ -79,19 +245,35 @@ def _methods(runs: Sequence[Dict[str, str]]) -> List[str]:
 
 def _validate(runs: Sequence[Dict[str, str]], manifest: Dict) -> None:
     if not runs:
-        raise ValueError("runs.csv has no result rows")
-    models = {row.get("energy_model") for row in runs}
-    if models != {"amber"}:
-        raise ValueError(f"expected one AMBER-only study, found {sorted(models)}")
-    config_ids = {row.get("config_id") for row in runs}
-    if config_ids != {manifest.get("config_id")}:
+        raise ValueError("input contains no result rows")
+    config_ids = {row.get("config_id") for row in runs if row.get("config_id")}
+    if config_ids and manifest.get("config_id") not in config_ids:
         raise ValueError("runs.csv and manifest.json do not describe one configuration")
-    budgets = {_number(row, "eval_budget") for row in runs}
-    if len(budgets) != 1:
+    budgets = set(_finite(runs, "eval_budget"))
+    if len(budgets) > 1:
         raise ValueError("methods do not share one energy-evaluation budget")
     run_ids = [row.get("run_id") for row in runs]
     if len(run_ids) != len(set(run_ids)):
         raise ValueError("runs.csv contains duplicate run IDs")
+
+
+def _model_label(runs: Sequence[Dict[str, str]]) -> str:
+    models = {row.get("energy_model", "legacy").lower() for row in runs}
+    if models == {"amber"}:
+        return "AMBER model"
+    if models == {"legacy"}:
+        return "legacy contact model"
+    return "mixed energy models"
+
+
+def _budget_label(runs: Sequence[Dict[str, str]]) -> str:
+    budgets = set(_finite(runs, "eval_budget"))
+    if len(budgets) != 1 or sum(
+            np.isfinite(_number(row, "eval_budget")) for row in runs) != len(runs):
+        return "recorded evaluation counts (budget metadata incomplete)"
+    if len(budgets) == 1:
+        return f"equal {int(next(iter(budgets))):,}-evaluation budget"
+    return "recorded evaluation counts"
 
 
 def _style() -> None:
@@ -216,11 +398,12 @@ def figure_accuracy(runs: Sequence[Dict[str, str]], output: str) -> None:
         n_seeds = min(sum(row["method"] == m for row in protein_runs)
                       for m in methods)
         fig.suptitle(
-            f"Structural accuracy under an equal AMBER evaluation budget — {protein}",
+            f"Structural accuracy — {protein} ({_model_label(protein_runs)})",
             fontsize=20, fontweight="bold")
         fig.text(
             0.5, 0.005,
-            f"Points are independent seeds (minimum n={n_seeds}/method); "
+            f"{_budget_label(protein_runs)}; points are independent seeds "
+            f"(minimum n={n_seeds}/method); "
             f"black bar = median, whisker = {interval_label}.",
             ha="center", fontsize=11, color="#444444")
         fig.tight_layout(rect=(0, 0.045, 1, 0.93))
@@ -248,6 +431,33 @@ def figure_fidelity(runs: Sequence[Dict[str, str]], output: str) -> None:
                      fontsize=20, fontweight="bold")
         fig.tight_layout(rect=(0, 0, 1, 0.92))
         _save(fig, output, f"poster_structural_fidelity_{protein}")
+
+
+def figure_representation_context(runs: Sequence[Dict[str, str]], output: str) -> None:
+    """Compare VQE encodings without mixing the lattice arm into the method contest."""
+    for protein in sorted({row["protein"] for row in runs}):
+        rows = [row for row in runs if row["protein"] == protein
+                and row["method"] in ("vqe", "lattice_vqe")]
+        methods = [method for method in ("vqe", "lattice_vqe")
+                   if any(row["method"] == method for row in rows)]
+        if len(methods) < 2:
+            continue
+        fig, axes = plt.subplots(1, 3, figsize=(14.8, 4.9))
+        for ax, key, ylabel, title in (
+            (axes[0], "ca_rmsd_ensemble_min", "Ensemble-minimum CA-RMSD (Å) ↓",
+             "Structural accuracy"),
+            (axes[1], "ceiling_ca_rmsd", "Encoding ceiling (Å) ↓",
+             "Best representable structure"),
+            (axes[2], "n_qubits", "Qubits", "Register size"),
+        ):
+            _seed_strip(ax, rows, key, methods, seed=310 + len(key))
+            ax.set_ylabel(ylabel)
+            ax.set_title(title)
+        fig.suptitle(
+            f"Encoding context for CVaR-VQE — {protein} (not an optimizer comparison)",
+            fontsize=19, fontweight="bold")
+        fig.tight_layout(rect=(0, 0, 1, 0.92))
+        _save(fig, output, f"poster_encoding_context_{protein}")
 
 
 def _group_traces(traces: Sequence[Dict[str, str]]) -> Dict[str, List[Dict[str, str]]]:
@@ -334,7 +544,8 @@ def figure_efficiency(runs: Sequence[Dict[str, str]], traces: Sequence[Dict[str,
                 edgecolor="white", linewidth=0.8, alpha=0.78)
             mx, xlo, xhi, _ = _summary_interval(x, 500 + len(method))
             my, ylo, yhi, _ = _summary_interval(y, 600 + len(method))
-            workers = sorted({int(_number(row, "minim_workers")) for row in mr})
+            workers = sorted({int(_number(row, "minim_workers")) for row in mr
+                              if np.isfinite(_number(row, "minim_workers"))}) or [1]
             worker_label = "/".join(map(str, workers))
             worker_word = "worker" if workers == [1] else "workers"
             axes[0].errorbar(
@@ -347,19 +558,43 @@ def figure_efficiency(runs: Sequence[Dict[str, str]], traces: Sequence[Dict[str,
         axes[0].set_title("Measured speed–accuracy tradeoff")
         axes[0].grid(color="#D8D8D8", linewidth=0.8, alpha=0.75)
         axes[0].legend(frameon=False, fontsize=9)
-        _convergence_panel(
-            axes[1], rows, grouped, methods, "n_energy_evaluations",
-            "Unique AMBER evaluations")
-        axes[1].set_title("Algorithmic efficiency (equal budget)")
-        _convergence_panel(
-            axes[2], rows, grouped, methods, "elapsed_s", "Elapsed search time (s)")
-        axes[2].set_title("Observed implementation efficiency")
+        if traces:
+            _convergence_panel(
+                axes[1], rows, grouped, methods, "n_energy_evaluations",
+                "Unique energy evaluations")
+            axes[1].set_title("Algorithmic efficiency (search trajectory)")
+            _convergence_panel(
+                axes[2], rows, grouped, methods, "elapsed_s",
+                "Elapsed search time (s)")
+            axes[2].set_title("Observed implementation efficiency")
+            note = (
+                "Trajectory is the RMSD of the lowest-energy structure seen, not the "
+                "best-RMSD structure selected after looking at the native.")
+        else:
+            for method in methods:
+                mr = [row for row in rows if row["method"] == method]
+                x = np.asarray([_number(row, "n_energy_evaluations") for row in mr])
+                y = np.asarray([_number(row, "ca_rmsd_ensemble_min") for row in mr])
+                keep = np.isfinite(x) & np.isfinite(y)
+                axes[1].scatter(
+                    x[keep], y[keep], s=70, marker=MARKERS[method],
+                    color=COLORS[method], edgecolor="white", linewidth=0.8,
+                    label=LABELS[method])
+            axes[1].set_xlabel("Unique energy evaluations ↓")
+            axes[1].set_ylabel("Ensemble-minimum CA-RMSD (Å) ↓")
+            axes[1].set_title("Recorded cost–accuracy outcome")
+            axes[1].grid(color="#D8D8D8", linewidth=0.8, alpha=0.75)
+            _seed_strip(axes[2], rows, "total_s", methods, seed=221)
+            axes[2].set_ylabel("End-to-end wall time (s) ↓")
+            axes[2].set_title("Runtime by method")
+            note = (
+                "No checkpoint trace was stored for this CSV; endpoint costs are shown "
+                "without implying a convergence trajectory.")
         fig.suptitle(f"Search efficiency and accuracy — {protein}",
                      fontsize=20, fontweight="bold")
         fig.text(
             0.5, 0.005,
-            "Trajectory is the RMSD of the lowest-energy structure seen, not the "
-            "best-RMSD structure selected after looking at the native.",
+            note,
             ha="center", fontsize=11, color="#444444")
         fig.tight_layout(rect=(0, 0.045, 1, 0.92))
         _save(fig, output, f"poster_efficiency_{protein}")
@@ -386,7 +621,8 @@ def figure_objective_alignment(runs: Sequence[Dict[str, str]], output: str) -> N
                 ax.annotate(f"s{row['seed']}", (xx, yy), xytext=(4, 4),
                             textcoords="offset points", fontsize=8, color="#444444")
         ax.axvline(0, color="#333333", lw=1.2, ls=(0, (4, 3)))
-        ax.set_xlabel("Predicted − native AMBER energy (kcal/mol)")
+        energy_name = "AMBER energy" if _model_label(rows) == "AMBER model" else "model energy"
+        ax.set_xlabel(f"Predicted − native {energy_name}")
         ax.set_ylabel("Ensemble-minimum CA-RMSD (Å) ↓")
         ax.set_title(protein)
         ax.grid(color="#D8D8D8", linewidth=0.8, alpha=0.75)
@@ -433,8 +669,13 @@ def figure_structure_comparison(run_dir: str, runs: Sequence[Dict[str, str]],
     representatives = {}
     for method in methods:
         row = _representative(rows, method)
-        sequence, _, ca, _ = geo.parse_pdb(os.path.join(run_dir, row["pdb_path"]))
-        ca = np.asarray(ca, dtype=float)
+        pdb_path = (row.get("pdb_path") or "").strip()
+        if pdb_path and os.path.exists(os.path.join(run_dir, pdb_path)):
+            sequence, _, ca, _ = geo.parse_pdb(os.path.join(run_dir, pdb_path))
+            ca = np.asarray(ca, dtype=float)
+        else:
+            sequence = row["sequence"].strip().upper()
+            ca = _predicted_ca(row)
         if len(ca) != len(native):
             raise ValueError(f"{method} prediction length does not match {protein}")
         aligned[method] = (sequence, geo.kabsch_superpose(ca, native))
@@ -443,9 +684,9 @@ def figure_structure_comparison(run_dir: str, runs: Sequence[Dict[str, str]],
     all_points = np.vstack([native] + [aligned[m][1] for m in methods])
     center = all_points.mean(axis=0)
     radius = max(1.0, float(np.abs(all_points - center).max()) * 1.10)
-    ncols = 2
+    ncols = 3 if len(methods) == 3 else min(2, len(methods))
     nrows = int(math.ceil(len(methods) / ncols))
-    fig = plt.figure(figsize=(13.0, 5.8 * nrows))
+    fig = plt.figure(figsize=(6.2 * ncols, 5.8 * nrows))
     for index, method in enumerate(methods, start=1):
         ax = fig.add_subplot(nrows, ncols, index, projection="3d")
         sequence, predicted = aligned[method]
@@ -546,12 +787,11 @@ def figure_paired_vqe_gap(runs: Sequence[Dict[str, str]], output: str) -> None:
     _save(fig, output, "poster_vqe_vs_best_classical")
 
 
-def write_audit(runs: Sequence[Dict[str, str]], manifest: Dict, output: str) -> None:
+def write_audit(runs: Sequence[Dict[str, str]], manifest: Dict, output: str,
+                source_kind: str) -> None:
     methods = _methods(runs)
-    stats = {}
-    for method in methods:
-        rows = [row for row in runs if row["method"] == method]
-        stats[method] = {
+    def method_stats(rows: Sequence[Dict[str, str]]) -> Dict[str, object]:
+        return {
             "n": len(rows),
             "median_ensemble_min_ca_rmsd_angstrom": float(np.median(
                 _finite(rows, "ca_rmsd_ensemble_min"))),
@@ -562,8 +802,24 @@ def write_audit(runs: Sequence[Dict[str, str]], manifest: Dict, output: str) -> 
             "median_secondary_structure_agreement": float(np.median(
                 _finite(rows, "ss_agreement"))),
         }
+
+    stats = {
+        method: method_stats(
+            [row for row in runs if row["method"] == method])
+        for method in methods
+    }
     pairs = _paired_vqe_gap(runs)
     proteins = sorted({row["protein"] for row in runs})
+    per_target_stats = {
+        protein: {
+            method: method_stats([
+                row for row in runs
+                if row["protein"] == protein and row["method"] == method
+            ])
+            for method in methods
+        }
+        for protein in proteins
+    }
     splits = sorted({row.get("split", "") for row in runs})
     minimum_cell_n = min(
         sum(row["protein"] == protein and row["method"] == method for row in runs)
@@ -571,9 +827,13 @@ def write_audit(runs: Sequence[Dict[str, str]], manifest: Dict, output: str) -> 
     held_out_scope = splits == ["test"] and len(proteins) >= 2 and minimum_cell_n >= 5
     audit = {
         "config_id": manifest.get("config_id"),
+        "source_kind": source_kind,
+        "energy_model": _model_label(runs),
+        "budget_scope": _budget_label(runs),
         "scope": {"proteins": proteins, "splits": splits,
                   "minimum_seeds_per_protein_method": minimum_cell_n},
-        "method_statistics": stats,
+        "method_statistics_pooled_descriptive_only": stats,
+        "per_target_method_statistics": per_target_stats,
         "paired_vqe_vs_best_classical": {
             "wins": sum(bool(pair["vqe_wins"]) for pair in pairs),
             "comparisons": len(pairs),
@@ -597,29 +857,32 @@ def write_audit(runs: Sequence[Dict[str, str]], manifest: Dict, output: str) -> 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("run_dir")
+    parser.add_argument("input", help="amber-study run directory or comparison CSV")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--structure-protein", action="append", default=[])
     args = parser.parse_args()
 
-    run_dir = os.path.abspath(args.run_dir)
+    run_dir, all_runs, traces, manifest, source_kind = _load_input(args.input)
+    # A lattice VQE run has a different representation and search space. Keep it for a
+    # dedicated encoding figure, but do not mix it into the same-representation method
+    # comparison or call it a quantum-vs-classical result.
+    runs = [row for row in all_runs if row["method"] in METHOD_ORDER]
+    if not runs:
+        raise ValueError("no same-representation VQE/classical rows were found")
     output = os.path.abspath(
         args.output_dir or os.path.join(run_dir, "poster_figures"))
-    with open(os.path.join(run_dir, "manifest.json"), encoding="utf-8") as handle:
-        manifest = json.load(handle)
-    runs = _read_csv(os.path.join(run_dir, "runs.csv"))
-    traces = _read_csv(os.path.join(run_dir, "checkpoints.csv"))
     _validate(runs, manifest)
     _style()
     figure_accuracy(runs, output)
     figure_fidelity(runs, output)
+    figure_representation_context(all_runs, output)
     figure_efficiency(runs, traces, output)
     figure_objective_alignment(runs, output)
     figure_paired_vqe_gap(runs, output)
     proteins = args.structure_protein or sorted({row["protein"] for row in runs})
     for protein in proteins:
         figure_structure_comparison(run_dir, runs, output, protein)
-    write_audit(runs, manifest, output)
+    write_audit(runs, manifest, output, source_kind)
     print(f"poster-ready figures: {output}")
     return 0
 
