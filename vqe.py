@@ -90,7 +90,10 @@ class BestSeenTracker:
 def _run_single(hamiltonian, circuit, n_qubits: int, layers: int,
                 alpha: float, shots: int, maxiter: int, seed: int,
                 optimizer: str, tracker: BestSeenTracker,
-                init_scale: float, verbose: bool) -> Dict:
+                init_scale: float, verbose: bool, sampler=None,
+                energy_batch: Optional[Callable] = None,
+                spsa_a: float = 0.25, spsa_c: float = 0.15,
+                trace_interval: int = 250) -> Dict:
     fmt = f"0{n_qubits}b"
     n_par = n_parameters(n_qubits, layers)
 
@@ -99,6 +102,10 @@ def _run_single(hamiltonian, circuit, n_qubits: int, layers: int,
     params0 = (math.pi / 2.0) + init_rng.normal(0.0, init_scale, size=n_par)
 
     history: List[float] = []
+    trace: List[Dict] = []
+    interval = max(1, int(trace_interval))
+    spent_at_start = int(hamiltonian.n_energy_evaluations)
+    next_trace = {"n": ((spent_at_start // interval) + 1) * interval}
     eval_counter = {"n": 0}
     # Which bitstring-sample stream the next objective call draws from. `None` means "a
     # fresh stream per call", which is what a deterministic optimizer like COBYLA gets.
@@ -111,28 +118,43 @@ def _run_single(hamiltonian, circuit, n_qubits: int, layers: int,
         tag = k if sample_tag["v"] is None else sample_tag["v"]
         rng = np.random.default_rng(np.random.SeedSequence([seed, tag]))
 
-        probs = np.asarray(circuit(params), dtype=float)
-        probs = np.clip(probs, 0.0, None)
-        s = probs.sum()
-        if s <= 0:
-            probs = np.full_like(probs, 1.0 / probs.size)
+        if sampler is None:
+            probs = np.asarray(circuit(params), dtype=float)
+            probs = np.clip(probs, 0.0, None)
+            s = probs.sum()
+            if s <= 0:
+                probs = np.full_like(probs, 1.0 / probs.size)
+            else:
+                probs = probs / s
+            idx = rng.choice(probs.size, size=shots, p=probs)
         else:
-            probs = probs / s
-
-        idx = rng.choice(probs.size, size=shots, p=probs)
-
+            idx = sampler.draw_indices(params, shots, rng)
 
         uniq, inverse = np.unique(idx, return_inverse=True)
+        bslist = [format(int(u), fmt) for u in uniq]
+        emap = energy_batch(bslist) if energy_batch is not None else None
         uniq_energies = np.empty(uniq.size, dtype=float)
-        for m, u in enumerate(uniq):
-            bs = format(int(u), fmt)
-            e = hamiltonian.energy(bs)
+        for m, bs in enumerate(bslist):
+            # A budget-aware batch may return only the prefix that fit. Falling back to
+            # .energy() for a missing entry preserves normal BudgetExhausted termination.
+            e = (emap[bs] if emap is not None and bs in emap
+                 else hamiltonian.energy(bs))
             uniq_energies[m] = e
             tracker.offer(bs, e)
         sample_energies = uniq_energies[inverse]   # length == shots
 
         val = cvar_from_samples(sample_energies, alpha)
         history.append(val)
+        if hamiltonian.n_energy_evaluations >= next_trace["n"]:
+            trace.append({
+                "n_energy_evaluations": int(hamiltonian.n_energy_evaluations),
+                "objective_eval": int(k + 1),
+                "cvar": float(val),
+                "best_energy": float(tracker.best_energy),
+                "best_bitstring": tracker.best_bitstring,
+                "elapsed_s": float(time.time() - t0),
+            })
+            next_trace["n"] += interval
         if verbose and (k % 25 == 0):
             print(f"      eval {k:4d} | CVaR {val:9.3f} | "
                   f"best seen {tracker.best_energy:9.3f}")
@@ -169,7 +191,7 @@ def _run_single(hamiltonian, circuit, n_qubits: int, layers: int,
             res = _spsa(objective, params0, maxiter,
                         np.random.default_rng(np.random.SeedSequence([seed, 7])),
                         set_sample_tag=lambda t: sample_tag.__setitem__("v", t),
-                        progress=progress)
+                        progress=progress, a=spsa_a, c=spsa_c)
         else:
             raise ValueError(f"unknown optimizer {optimizer!r}; use COBYLA or SPSA")
         final_params = np.asarray(res.x if hasattr(res, "x") else res, dtype=float)
@@ -186,6 +208,7 @@ def _run_single(hamiltonian, circuit, n_qubits: int, layers: int,
         "final_params": final_params,
         "final_objective": final_objective,
         "history": history,
+        "trace": trace,
         "n_objective_evals": eval_counter["n"],
         "terminated_by": terminated_by,
         "runtime": runtime,
@@ -310,6 +333,9 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
                         final_shots: int = 8192, init_scale: float = 1.0,
                         device: str = "lightning.qubit",
                         readout_reserve_frac: float = 0.01,
+                        sampler=None, energy_batch: Optional[Callable] = None,
+                        spsa_a: float = 0.25, spsa_c: float = 0.15,
+                        trace_interval: int = 250,
                         verbose: bool = False) -> Dict:
     """Global CVaR-VQE over the entire protein configuration register.
 
@@ -362,11 +388,17 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
     restart, roughly 33 SPSA iterations to fit 88 parameters. The failure is silent: the
     run reports full budget usage, respects cost matching, and returns a plausible
     structure. ``_warn_if_underoptimised`` below exists so it is never silent again.
+
+    ``sampler`` selects an alternative exact/approximate sampler without forking the
+    optimizer logic. The AMBER study uses the distribution-exact direct path for the
+    one-layer RY-CNOT ansatz and MPS for supported deeper cases.
+    ``energy_batch`` may evaluate the independent unique structures in one objective call
+    concurrently; the Hamiltonian remains the sole owner of the shared hard budget.
     """
     _warn_if_underoptimised(hamiltonian, shots, restarts, optimizer, verbose)
 
     n_qubits = hamiltonian.n_qubits
-    if n_qubits > 30:
+    if sampler is None and n_qubits > 30:
         raise MemoryError(
             f"n_qubits={n_qubits} requires ~{2**n_qubits * 16 / 1e9:.0f} GB "
             "for a statevector. A genuine full-system VQE is not simulable "
@@ -377,7 +409,8 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
     check_optimizer_budget(maxiter, n_par, optimizer,
                            getattr(hamiltonian, "eval_budget", None))
 
-    circuit = build_global_circuit(n_qubits, layers, ring=ring, device=device)
+    circuit = (None if sampler is not None else
+               build_global_circuit(n_qubits, layers, ring=ring, device=device))
     tracker = BestSeenTracker()
 
     hamiltonian.reset_counters()
@@ -413,7 +446,22 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
                 break
         run = _run_single(hamiltonian, circuit, n_qubits, layers, alpha,
                           shots, maxiter, rseed, optimizer, tracker,
-                          init_scale, verbose)
+                          init_scale, verbose, sampler=sampler,
+                          energy_batch=energy_batch, spsa_a=spsa_a,
+                          spsa_c=spsa_c, trace_interval=trace_interval)
+        if (not run["trace"] or
+                run["trace"][-1]["n_energy_evaluations"] !=
+                hamiltonian.n_energy_evaluations):
+            run["trace"].append({
+                "n_energy_evaluations": int(hamiltonian.n_energy_evaluations),
+                "objective_eval": int(run["n_objective_evals"]),
+                "cvar": (float(run["history"][-1]) if run["history"] else float("nan")),
+                "best_energy": float(tracker.best_energy),
+                "best_bitstring": tracker.best_bitstring,
+                "elapsed_s": float(run["runtime"]),
+            })
+        for point in run["trace"]:
+            point["restart"] = r
         runs.append(run)
         restarts_completed += 1
         if best_run is None or run["final_objective"] < best_run["final_objective"]:
@@ -426,40 +474,58 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
     hamiltonian.release()               # hand the reserve back for the read-out
 
     fmt = f"0{n_qubits}b"
-    final_probs = np.asarray(circuit(best_run["final_params"]), dtype=float)
-    final_probs = np.clip(final_probs, 0.0, None)
-    final_probs = final_probs / final_probs.sum()
-
     final_rng = np.random.default_rng(np.random.SeedSequence([seed, 0xF1A1]))
-    final_idx = final_rng.choice(final_probs.size, size=final_shots,
-                                 p=final_probs)
+    if sampler is None:
+        final_probs = np.asarray(circuit(best_run["final_params"]), dtype=float)
+        final_probs = np.clip(final_probs, 0.0, None)
+        final_probs = final_probs / final_probs.sum()
+        final_idx = final_rng.choice(final_probs.size, size=final_shots,
+                                     p=final_probs)
+        modal_bits = format(int(np.argmax(final_probs)), fmt)
+        p_sorted = np.sort(final_probs)[::-1]
+        top1 = float(p_sorted[0])
+        top16 = float(p_sorted[:16].sum())
+        nz = final_probs[final_probs > 1e-15]
+        entropy = float(-np.sum(nz * np.log2(nz)))
+    else:
+        final_idx = sampler.draw_indices(best_run["final_params"], final_shots,
+                                         final_rng)
+        vals, counts = np.unique(final_idx, return_counts=True)
+        freq = counts.astype(float) / float(final_shots)
+        modal_bits = format(int(vals[np.argmax(counts)]), fmt)
+        top1 = float(freq.max())
+        top16 = float(np.sort(freq)[::-1][:16].sum())
+        entropy = float(-np.sum(freq * np.log2(freq)))
     # Scan most-probable-first. np.unique returns basis indices in *sorted* order, so if
     # the budget truncates the read-out a plain unique() scan keeps an arbitrary
     # low-index subset rather than the states the circuit actually favours.
     uniq, counts = np.unique(final_idx, return_counts=True)
     uniq = uniq[np.argsort(-counts, kind="stable")]
+    readout_bits = [format(int(u), fmt) for u in uniq]
+    readout_energies = (energy_batch(readout_bits)
+                        if energy_batch is not None else None)
     vqe_bits, vqe_energy = None, float("inf")
-    for u in uniq:
-        bs = format(int(u), fmt)
+    for bs in readout_bits:
         try:
-            e = hamiltonian.energy(bs)
+            e = (readout_energies[bs]
+                 if readout_energies is not None and bs in readout_energies
+                 else hamiltonian.energy(bs))
         except BudgetExhausted:
             break
         if e < vqe_energy:
             vqe_energy, vqe_bits = e, bs
 
-    modal_bits = format(int(np.argmax(final_probs)), fmt)
     try:
         modal_energy = hamiltonian.energy(modal_bits)
     except BudgetExhausted:
         modal_energy = float("nan")
 
-    p_sorted = np.sort(final_probs)[::-1]
-    top1 = float(p_sorted[0])
-    top16 = float(p_sorted[:16].sum())
-    nz = final_probs[final_probs > 1e-15]
-    entropy = float(-np.sum(nz * np.log2(nz)))
-
+    objective_trace = []
+    for restart, run in enumerate(runs):
+        for point in run["trace"]:
+            q = dict(point)
+            q["restart"] = restart
+            objective_trace.append(q)
     return {
         "vqe_bitstring": vqe_bits,
         "vqe_energy": float(vqe_energy),
@@ -469,6 +535,7 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
         "best_seen_energy": float(tracker.best_energy),
         "final_objective": best_run["final_objective"],
         "history": best_run["history"],
+        "objective_trace": objective_trace,
         "distribution_top1_prob": top1,
         "distribution_top16_mass": top16,
         "distribution_entropy_bits": entropy,
@@ -481,8 +548,14 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
         "final_shots": final_shots,
         "restarts": restarts,
         "optimizer": optimizer,
+        "spsa_a": float(spsa_a),
+        "spsa_c": float(spsa_c),
+        "backend": (getattr(sampler, "backend_name", "sampler")
+                    if sampler is not None else "statevector"),
         "n_objective_evals_total": sum(r["n_objective_evals"] for r in runs),
         "n_objective_evals_best_run": best_run["n_objective_evals"],
+        "n_spsa_iterations_total": (sum(r["n_objective_evals"] for r in runs) // 2
+                                     if optimizer.upper() == "SPSA" else 0),
         "n_energy_evaluations": hamiltonian.n_energy_evaluations,
         "n_unique_structures_cached": hamiltonian.cache_size(),
         "maxiter_resolved": maxiter,
@@ -494,4 +567,4 @@ def run_global_cvar_vqe(hamiltonian, layers: int = 4, alpha: float = 0.15,
         "restarts_completed": restarts_completed,
         "runtime": total_runtime,
         "seed": seed,
-    } 
+    }

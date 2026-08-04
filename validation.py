@@ -1328,6 +1328,57 @@ def test_default_optimizer_suits_a_stochastic_objective() -> bool:
                    f"default {cfg['optimizer']}, COBYLA still selectable")
 
 
+def test_one_layer_direct_sampler_is_exact() -> bool:
+    """The fast sampler must reproduce the dense circuit probability distribution."""
+    from direct_sampler import OneLayerDirectSampler
+
+    ok = True
+    worst = 0.0
+    rng = np.random.default_rng(2217)
+    for ring in (False, True):
+        for n_qubits in (2, 3, 5, 8):
+            params = rng.normal(0.2, 1.7, size=n_qubits)
+            dense = np.asarray(
+                vqe_mod.build_global_circuit(n_qubits, 1, ring=ring)(params))
+            direct = OneLayerDirectSampler(
+                n_qubits, layers=1, ring=ring).probs(params)
+            err = float(np.max(np.abs(dense - direct)))
+            worst = max(worst, err)
+            ok &= err < 2e-12
+    try:
+        OneLayerDirectSampler(6, layers=2)
+        ok = False
+    except ValueError:
+        pass
+    return _report("one-layer direct sampler is distribution-exact", ok,
+                   f"worst probability error {worst:.2e}")
+
+
+def test_vqe_exposes_sampler_batch_and_trace_hooks() -> bool:
+    """Dense and direct-sampling studies must use the same optimizer implementation."""
+    params = set(inspect.signature(vqe_mod.run_global_cvar_vqe).parameters)
+    needed = {"sampler", "energy_batch", "spsa_a", "spsa_c", "trace_interval"}
+    src = inspect.getsource(vqe_mod.run_global_cvar_vqe)
+    ok = needed <= params and '"objective_trace"' in src and '"backend"' in src
+    return _report("VQE exposes sampler, batch and trace hooks", ok,
+                   f"hooks present: {sorted(needed & params)}")
+
+
+def test_cem_respects_the_shared_budget() -> bool:
+    """The strongest classical distribution baseline must use the same hard allowance."""
+    seq = "GYDPETGTWG"
+    rep = reps.TorsionStateRepresentation(len(seq), n_states=4, sequence=seq)
+    H = ham.FoldingHamiltonian(seq, rep, eval_budget=80)
+    result = cb.cross_entropy_search(
+        H, n_samples=2000, batch_size=16, seed=4, trace_interval=20)
+    trace_ok = bool(result["trace"]) and all(
+        int(point["n_energy_evaluations"]) <= 80 for point in result["trace"])
+    ok = 0 < H.n_energy_evaluations <= 80 and trace_ok
+    return _report("CEM respects the shared evaluation budget", ok,
+                   f"spent {H.n_energy_evaluations}/80; "
+                   f"{len(result['trace'])} trace points")
+
+
 def test_budget_is_enforced() -> bool:
     """The budget is a hard ceiling, not a hint."""
     seq = "GYDPETGTWG"
@@ -2049,8 +2100,11 @@ def run_all() -> bool:
         test_spsa_schedule_is_driven_by_progress,
         test_optimizer_guard_covers_spsa,
         test_default_optimizer_suits_a_stochastic_objective,
+        test_one_layer_direct_sampler_is_exact,
+        test_vqe_exposes_sampler_batch_and_trace_hooks,
         # budget
         test_budget_is_enforced,
+        test_cem_respects_the_shared_budget,
         test_arms_are_cost_matched,
         test_restarts_survive_shared_budget,
         test_optimizer_budget_guard_rejects_simplex_only,

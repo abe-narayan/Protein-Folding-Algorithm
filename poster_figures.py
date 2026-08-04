@@ -252,6 +252,13 @@ def _validate(runs: Sequence[Dict[str, str]], manifest: Dict) -> None:
     budgets = set(_finite(runs, "eval_budget"))
     if len(budgets) > 1:
         raise ValueError("methods do not share one energy-evaluation budget")
+    for row in runs:
+        budget = _number(row, "eval_budget")
+        spent = _number(row, "n_energy_evaluations")
+        if np.isfinite(budget) and np.isfinite(spent) and spent > budget:
+            raise ValueError(
+                f"{row.get('protein')} {row.get('method')} seed {row.get('seed')} "
+                f"spent {spent:g} evaluations against budget {budget:g}")
     run_ids = [row.get("run_id") for row in runs]
     if len(run_ids) != len(set(run_ids)):
         raise ValueError("runs.csv contains duplicate run IDs")
@@ -272,7 +279,14 @@ def _budget_label(runs: Sequence[Dict[str, str]]) -> str:
             np.isfinite(_number(row, "eval_budget")) for row in runs) != len(runs):
         return "recorded evaluation counts (budget metadata incomplete)"
     if len(budgets) == 1:
-        return f"equal {int(next(iter(budgets))):,}-evaluation budget"
+        budget = int(next(iter(budgets)))
+        spent = _finite(runs, "n_energy_evaluations")
+        if spent.size == len(runs) and np.all(spent == budget):
+            return f"equal {budget:,}-evaluation budget"
+        if spent.size:
+            return (f"maximum {budget:,}-evaluation budget "
+                    f"(actual {int(spent.min()):,}-{int(spent.max()):,})")
+        return f"maximum {budget:,}-evaluation budget"
     return "recorded evaluation counts"
 
 
@@ -431,6 +445,85 @@ def figure_fidelity(runs: Sequence[Dict[str, str]], output: str) -> None:
                      fontsize=20, fontweight="bold")
         fig.tight_layout(rect=(0, 0, 1, 0.92))
         _save(fig, output, f"poster_structural_fidelity_{protein}")
+
+
+def figure_balanced_scorecard(runs: Sequence[Dict[str, str]], output: str) -> None:
+    """One poster panel with accuracy, topology, cost, and VQE readout honesty."""
+    for protein in sorted({row["protein"] for row in runs}):
+        rows = [row for row in runs if row["protein"] == protein]
+        methods = _methods(rows)
+        fig, axes = plt.subplots(2, 2, figsize=(13.8, 10.0))
+
+        _seed_strip(axes[0, 0], rows, "ca_rmsd_ensemble_min", methods, seed=410)
+        axes[0, 0].set_ylabel("Ensemble-minimum CA-RMSD (Å) ↓")
+        axes[0, 0].set_title("A  Global fold accuracy")
+
+        _seed_strip(axes[0, 1], rows, "contact_f1", methods, seed=411)
+        axes[0, 1].set_ylim(-0.04, 1.07)
+        axes[0, 1].set_ylabel("Native-contact F1 ↑")
+        axes[0, 1].set_title("B  Topology beyond RMSD")
+
+        for method in methods:
+            mr = [row for row in rows if row["method"] == method]
+            x = np.asarray([_number(row, "total_s") for row in mr])
+            y = np.asarray([_number(row, "ca_rmsd_ensemble_min") for row in mr])
+            keep = np.isfinite(x) & np.isfinite(y)
+            axes[1, 0].scatter(
+                x[keep], y[keep], s=72, marker=MARKERS[method],
+                color=COLORS[method], edgecolor="white", linewidth=0.8,
+                alpha=0.84, label=LABELS[method])
+            if np.any(keep):
+                axes[1, 0].scatter(
+                    np.median(x[keep]), np.median(y[keep]), s=150,
+                    marker=MARKERS[method], facecolor=COLORS[method],
+                    edgecolor="#202020", linewidth=1.5, zorder=4)
+        axes[1, 0].set_xlabel("End-to-end wall time (s) ↓")
+        axes[1, 0].set_ylabel("Ensemble-minimum CA-RMSD (Å) ↓")
+        axes[1, 0].set_title("C  Measured speed-accuracy tradeoff")
+        axes[1, 0].grid(color="#D8D8D8", linewidth=0.8, alpha=0.75)
+        axes[1, 0].legend(frameon=False, fontsize=9)
+
+        vqe_rows = [row for row in rows if row["method"] == "vqe"]
+        paired = []
+        for row in vqe_rows:
+            final = _number(row, "ca_rmsd_ensemble_min")
+            seen = _number(row, "best_seen_ca_rmsd_ensemble_min")
+            if np.isfinite(final) and np.isfinite(seen):
+                paired.append((row["seed"], final, seen))
+        for seed, final, seen in paired:
+            color = COLORS["vqe"] if seen <= final else COLORS["sa"]
+            axes[1, 1].plot([0, 1], [final, seen], color=color, lw=1.5,
+                            alpha=0.52, zorder=1)
+            axes[1, 1].scatter(
+                [0, 1], [final, seen], s=64, color=color, edgecolor="white",
+                linewidth=0.8, zorder=2)
+            axes[1, 1].annotate(
+                f"s{seed}", (1, seen), xytext=(5, 0), textcoords="offset points",
+                va="center", fontsize=9, color="#444444")
+        if paired:
+            for x, values in enumerate(([p[1] for p in paired],
+                                        [p[2] for p in paired])):
+                axes[1, 1].plot(
+                    [x - 0.13, x + 0.13], [np.median(values)] * 2,
+                    color="#202020", lw=3.2, zorder=3)
+        axes[1, 1].set_xticks(
+            [0, 1], ["Final circuit\nreadout", "Lowest-energy\nstructure encountered"])
+        axes[1, 1].set_xlim(-0.35, 1.45)
+        axes[1, 1].set_ylabel("Ensemble-minimum CA-RMSD (Å) ↓")
+        axes[1, 1].set_title("D  VQE output versus search memory")
+        axes[1, 1].grid(axis="y", color="#D8D8D8", linewidth=0.8, alpha=0.75)
+
+        fig.suptitle(
+            f"Balanced benchmark scorecard - {protein} ({_model_label(rows)})",
+            fontsize=20, fontweight="bold")
+        fig.text(
+            0.5, 0.008,
+            f"{_budget_label(rows)}; dots are seeds and black marks are medians. "
+            "Panel D keeps the deployable circuit output separate from the "
+            "lowest-energy candidate encountered during optimization.",
+            ha="center", fontsize=10.5, color="#444444")
+        fig.tight_layout(rect=(0, 0.045, 1, 0.95), h_pad=2.7, w_pad=2.0)
+        _save(fig, output, f"poster_balanced_scorecard_{protein}")
 
 
 def figure_representation_context(runs: Sequence[Dict[str, str]], output: str) -> None:
@@ -698,7 +791,8 @@ def figure_structure_comparison(run_dir: str, runs: Sequence[Dict[str, str]],
         ax.text(*native[0], " N", color="#303030", fontsize=10)
         ax.text(*native[-1], " C", color="#303030", fontsize=10)
         medoid_rmsd = geo.ca_rmsd(predicted, native)
-        ax.set_title(f"{LABELS[method]} — representative seed {row['seed']}", pad=2)
+        ax.set_title(
+            f"{SHORT_LABELS[method]}\nrepresentative seed {row['seed']}", pad=2)
         ax.text2D(
             0.5, 0.015,
             f"ensemble-min RMSD {_number(row, 'ca_rmsd_ensemble_min'):.2f} Å   •   "
@@ -727,7 +821,8 @@ def figure_structure_comparison(run_dir: str, runs: Sequence[Dict[str, str]],
     _save(fig, output, f"poster_structure_comparison_{protein}")
 
 
-def _paired_vqe_gap(runs: Sequence[Dict[str, str]]) -> List[Dict[str, object]]:
+def _paired_vqe_gap(runs: Sequence[Dict[str, str]],
+                    vqe_key: str = "ca_rmsd_ensemble_min") -> List[Dict[str, object]]:
     cells: Dict[Tuple[str, str], List[Dict[str, str]]] = defaultdict(list)
     for row in runs:
         cells[(row["protein"], row["seed"])].append(row)
@@ -739,7 +834,10 @@ def _paired_vqe_gap(runs: Sequence[Dict[str, str]]) -> List[Dict[str, object]]:
         if len(vqe) != 1 or not classical:
             continue
         best = min(classical, key=lambda row: _number(row, "ca_rmsd_ensemble_min"))
-        gap = (_number(vqe[0], "ca_rmsd_ensemble_min")
+        vqe_rmsd = _number(vqe[0], vqe_key)
+        if not np.isfinite(vqe_rmsd):
+            continue
+        gap = (vqe_rmsd
                - _number(best, "ca_rmsd_ensemble_min"))
         pairs.append({
             "protein": protein, "seed": seed, "gap": gap,
@@ -793,6 +891,8 @@ def write_audit(runs: Sequence[Dict[str, str]], manifest: Dict, output: str,
     def method_stats(rows: Sequence[Dict[str, str]]) -> Dict[str, object]:
         return {
             "n": len(rows),
+            "median_unique_energy_evaluations": float(np.median(
+                _finite(rows, "n_energy_evaluations"))),
             "median_ensemble_min_ca_rmsd_angstrom": float(np.median(
                 _finite(rows, "ca_rmsd_ensemble_min"))),
             "median_total_seconds": float(np.median(_finite(rows, "total_s"))),
@@ -809,6 +909,8 @@ def write_audit(runs: Sequence[Dict[str, str]], manifest: Dict, output: str,
         for method in methods
     }
     pairs = _paired_vqe_gap(runs)
+    best_seen_pairs = _paired_vqe_gap(
+        runs, vqe_key="best_seen_ca_rmsd_ensemble_min")
     proteins = sorted({row["protein"] for row in runs})
     per_target_stats = {
         protein: {
@@ -838,6 +940,14 @@ def write_audit(runs: Sequence[Dict[str, str]], manifest: Dict, output: str,
             "wins": sum(bool(pair["vqe_wins"]) for pair in pairs),
             "comparisons": len(pairs),
             "gaps_angstrom": pairs,
+        },
+        "paired_vqe_best_seen_vs_best_classical": {
+            "definition": (
+                "VQE's lowest-AMBER-energy structure encountered during search versus "
+                "the best classical result; this is not the final circuit readout."),
+            "wins": sum(bool(pair["vqe_wins"]) for pair in best_seen_pairs),
+            "comparisons": len(best_seen_pairs),
+            "gaps_angstrom": best_seen_pairs,
         },
         "poster_claims": {
             "held_out_multi_target_accuracy_scope": held_out_scope,
@@ -875,6 +985,7 @@ def main() -> int:
     _style()
     figure_accuracy(runs, output)
     figure_fidelity(runs, output)
+    figure_balanced_scorecard(runs, output)
     figure_representation_context(all_runs, output)
     figure_efficiency(runs, traces, output)
     figure_objective_alignment(runs, output)

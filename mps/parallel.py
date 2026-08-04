@@ -73,6 +73,37 @@ class OBC2Builder:
         return build_obc2_native(self.sequence, rep)
 
 
+class AmberBuilder:
+    """Picklable factory for the current ff14SB + GBn2 Hamiltonian.
+
+    This is the non-pinned counterpart of :class:`OBC2Builder` and is used only by new
+    AMBER studies.  Each worker owns one OpenMM Context, so independent structures in a
+    VQE/CEM batch can be minimized concurrently without sharing a non-thread-safe Context.
+    """
+
+    def __init__(self, sequence: str, n_states: int = 4,
+                 restraint_k: float = 100.0, minimization_steps: int = 50,
+                 minimization_tolerance: float = 2.0,
+                 collapse_floor: float = -600.0):
+        self.sequence = sequence.strip().upper()
+        self.n_states = int(n_states)
+        self.restraint_k = float(restraint_k)
+        self.minimization_steps = int(minimization_steps)
+        self.minimization_tolerance = float(minimization_tolerance)
+        self.collapse_floor = float(collapse_floor)
+
+    def __call__(self):
+        import representations as reps
+        import amber_hamiltonian as amber
+        rep = reps.TorsionStateRepresentation(
+            len(self.sequence), n_states=self.n_states, sequence=self.sequence)
+        return amber.AmberHamiltonian(
+            self.sequence, rep, restraint_k=self.restraint_k,
+            minimization_steps=self.minimization_steps,
+            minimization_tolerance=self.minimization_tolerance,
+            collapse_floor=self.collapse_floor, eval_budget=None)
+
+
 import sys
 import multiprocessing as mp
 
@@ -136,6 +167,49 @@ class MinimizationPool:
             self._pool.join()
         except Exception:
             pass
+
+
+class BudgetedEnergyBatch:
+    """Connect a worker minimization pool to a parent budget/cache.
+
+    ``compute`` may return only a prefix when the parent budget is nearly exhausted.
+    Search drivers then fall back to ``parent.energy`` for the first missing value, which
+    raises the normal :class:`budget.BudgetExhausted`.  This preserves the hard allowance
+    while avoiding an all-or-nothing batch that would leave budget unused.
+    """
+
+    def __init__(self, parent_hamiltonian, builder, n_workers: int):
+        self.parent = parent_hamiltonian
+        self.pool = MinimizationPool(builder, n_workers)
+        self.runtime = 0.0
+
+    def compute(self, bitstrings):
+        import time
+        out, misses = {}, []
+        for bs in bitstrings:
+            hit = self.parent._cache.get(bs)
+            if hit is None:
+                if bs not in misses:
+                    misses.append(bs)
+            else:
+                out[bs] = hit
+
+        remaining = self.parent.budget_remaining
+        allowed = len(misses) if remaining == float("inf") else min(
+            len(misses), max(0, int(remaining)))
+        todo = misses[:allowed]
+        for _ in todo:
+            self.parent._charge()
+        if todo:
+            t0 = time.time()
+            computed = self.pool.compute(todo)
+            self.runtime += time.time() - t0
+            self.parent._cache.update(computed)
+            out.update(computed)
+        return out
+
+    def close(self):
+        self.pool.close()
 
 
 # --------------------------------------------------------------------------- REC 1
